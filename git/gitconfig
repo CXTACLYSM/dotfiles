@@ -1,0 +1,28 @@
+# Подключается из ~/.gitconfig (install.sh добавляет include.path):
+#   [include]
+#       path = ~/.config/dotfiles/git/gitconfig
+# Имя и почта здесь не задаются: они у каждой машины свои.
+
+[core]
+	# Diff, show, log -p — через delta: подсветка синтаксиса, номера строк,
+	# изменённые слова внутри строки; n / N — следующий / предыдущий файл.
+	pager = delta
+
+[interactive]
+	# git add -p тоже через delta; --color-only сохраняет строки один в один.
+	diffFilter = delta --color-only
+
+[delta]
+	navigate = true
+	dark = true
+	line-numbers = true
+	syntax-theme = Catppuccin Mocha
+
+[alias]
+	# Две колонки рядом — для широкого окна.
+	ds = -c delta.side-by-side=true diff
+	# difftastic: diff по синтаксическому дереву; переформатирование не
+	# считается изменением, перенос кода виден как перенос.
+	dft = -c diff.external=difft diff
+	dshow = -c diff.external=difft show --ext-diff
+	dlog = -c diff.external=difft log -p --ext-diff

@@ -1,0 +1,429 @@
+#!/bin/zsh
+# Рабочая tmux-сессия проекта: сессия = проект, окна = роли. Повторный
+# `dev` возвращает в уже открытую сессию.
+#
+#   dev                    проект текущего каталога (корень ищется вверх:
+#                          go.work → go.mod → .git)
+#   dev backend frontend   подпроекты явно, корень — текущий каталог
+#   dev -b TASK-123        сессия под задачу: git worktree ветки рядом с
+#                          репозиторием (../.worktrees/<repo>@<ветка>);
+#                          новой ветки нет нигде — создаётся от origin/HEAD
+#   dev -k                 закрыть текущую сессию: worktree задачи удаляется
+#                          (если чистый), у основной — docker compose stop
+#   dev -c                 проверка окружения: docker, стек compose, занятые
+#                          порты, Go toolchain, GOPROXY/приватные модули
+#   dev -d [...]           только создать сессию и напечатать её имя
+#                          (так её открывает переключатель проектов prefix f)
+#
+# Раскладка — ~/.config/dev/<проект>.zsh ($DEV_LAYOUTS), обычный zsh:
+#   win ИМЯ [-x] [-c КАТАЛОГ] [КОМАНДА]   новое окно
+#   pane    [-x] [-c КАТАЛОГ] [КОМАНДА]   панель под предыдущей в том же окне
+# КОМАНДА набирается в промпте и ждёт Enter, с -x запускается сразу;
+# КАТАЛОГ — относительно корня. Доступны $root, $project, $session.
+# Раскладки только личные: файл из чужого репозитория исполнять нельзя.
+#
+# Без файла — автораскладка:
+#   1 editor   nvim .
+#   2 server   devlog make run (цель run) или devlog go run ./cmd/<x>
+#   3 tests    пусто: туда шлёт go test Space gt из nvim
+#   4 infra    make up или docker compose up -d, если есть compose-файл
+#   5 shell    свободное окно; DEV_SHELL=0 — без него
+# Монорепо (в корне нет go.mod/go.work/package.json, а подпроектов ≥2):
+#   backend/editor backend/server backend/tests frontend/… infra shell
+
+emulate -L zsh
+path=(/opt/homebrew/bin /usr/local/bin $path)   # run-shell и popup — в окружении сервера tmux
+typeset -U path
+
+self=${0:A}
+layouts=${DEV_LAYOUTS:-$HOME/.config/dev}
+
+die() { print -u2 -r -- "dev: $*"; exit 1 }
+
+# ============================================================
+# Корень, проект, имя сессии
+# ============================================================
+
+# Ближайший вверх каталог с go.work, иначе с go.mod, иначе с .git.
+find_root() {
+  local marker dir
+  for marker in go.work go.mod .git; do
+    dir=$1
+    while [[ $dir != / && $dir != $HOME ]]; do
+      if [[ -e $dir/$marker ]]; then print -r -- $dir; return; fi
+      dir=${dir:h}
+    done
+  done
+  print -r -- $1
+}
+
+# project — имя для файла раскладки, session — имя сессии tmux, wt — корень
+# linked worktree. В worktree сессия — проект@ветка; проект — каталог корня,
+# а если корень и есть worktree — имя основного репозитория.
+name_session() {
+  local gitdir common branch
+  project=${root:t} wt=
+  gitdir=$(git -C $root rev-parse --path-format=absolute --git-dir 2>/dev/null)
+  common=$(git -C $root rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  if [[ -n $gitdir && $gitdir != $common ]]; then
+    wt=$(git -C $root rev-parse --show-toplevel)
+    [[ $root == $wt ]] && project=${${common:h}:t}
+    branch=$(git -C $root branch --show-current)
+    [[ -n $branch ]] || branch=$(git -C $root rev-parse --short HEAD)
+    session=$project@${branch//\//-}
+  else
+    session=$project
+  fi
+  session=${session//[ .:]/_}   # tmux не допускает . и : в именах сессий
+}
+
+compose_file() {
+  local f
+  for f in compose.yaml compose.yml docker-compose.yaml docker-compose.yml; do
+    if [[ -f $root/$f ]]; then print -r -- $root/$f; return 0; fi
+  done
+  return 1
+}
+
+# ============================================================
+# Проверка окружения (dev -c)
+# ============================================================
+
+typeset -a problems oks
+
+check_docker() {
+  compose_file >/dev/null || return 0
+  if (( ! $+commands[docker] )); then problems+='docker не установлен'; return; fi
+  if ! docker info --format '{{.ServerVersion}}' >/dev/null 2>&1; then
+    problems+='docker не запущен'; return
+  fi
+
+  local json p owner total running
+  local -a ports ours down
+  # Порты, которые публикует compose проекта, и те из них, что держат его же контейнеры.
+  ports=(${(f)"$(cd $root && docker compose config --format json 2>/dev/null |
+    jq -r '.services[].ports[]?.published // empty' | sort -u)"})
+  json=$(cd $root && docker compose ps --all --format json 2>/dev/null | jq -s flatten)
+  ours=(${(f)"$(jq -r '.[] | .Publishers[]? | .PublishedPort | select(. > 0)' <<<$json)"})
+
+  for p in $ports; do
+    (( ${ours[(Ie)$p]} )) && continue
+    owner=$(docker ps --filter publish=$p --format '{{.Names}}' | head -1)
+    [[ -n $owner ]] || owner=$(lsof -nP -iTCP:$p -sTCP:LISTEN -Fc 2>/dev/null | sed -n 's/^c//p' | head -1)
+    [[ -n $owner ]] && problems+="порт $p занят: $owner"
+  done
+
+  total=$(cd $root && docker compose config --services 2>/dev/null | wc -l)
+  running=$(jq '[.[] | select(.State == "running")] | length' <<<$json)
+  down=(${(f)"$(jq -r '.[] | select(.State != "running" or .Health == "unhealthy") | .Service' <<<$json)"})
+  if (( running == 0 )); then
+    problems+='стек compose не запущен'
+  elif (( $#down )); then
+    problems+="стек: не в строю ${(j:, :)down}"
+  else
+    oks+="стек compose: ${running// /}/${total// /} running"
+  fi
+}
+
+check_go() {
+  [[ -f $root/go.mod ]] || return 0
+  autoload -Uz is-at-least
+  local json need have toolchain policy
+  json=$(GOTOOLCHAIN=local go mod edit -json $root/go.mod 2>/dev/null) || return 0
+  need=$(jq -r '.Go // ""' <<<$json)
+  [[ -n $need ]] || return 0
+  toolchain=$(jq -r '.Toolchain // "" | ltrimstr("go")' <<<$json)
+  [[ -n $toolchain ]] && is-at-least $need $toolchain && need=$toolchain
+  have=$(GOTOOLCHAIN=local go env GOVERSION); have=${have#go}
+
+  if is-at-least $need $have; then
+    oks+="go $have (go.mod: $need)"
+    return
+  fi
+  # go env вне модуля: внутри GOTOOLCHAIN=auto сам начал бы скачивание.
+  policy=$(cd ~ && go env GOTOOLCHAIN)
+  if [[ -d $(GOTOOLCHAIN=local go env GOMODCACHE)/golang.org/toolchain@v0.0.1-go$need.$(GOTOOLCHAIN=local go env GOOS)-$(GOTOOLCHAIN=local go env GOARCH) ]]; then
+    oks+="go.mod требует go$need — toolchain уже в кэше"
+  elif [[ $policy == local* ]]; then
+    problems+="go.mod требует go$need, локально $have и GOTOOLCHAIN=local"
+  else
+    problems+="первая сборка скачает go$need"
+  fi
+}
+
+# Внутренний GOPROXY и хосты GOPRIVATE: недоступны — скорее всего, нет VPN.
+check_net() {
+  [[ -f $root/go.mod || -f $root/go.work ]] || return 0
+  local proxy pat host
+  proxy=$(cd ~ && GOTOOLCHAIN=local go env GOPROXY)
+  proxy=${${proxy%%,*}%%|*}
+  if [[ $proxy == http* && $proxy != https://proxy.golang.org* ]]; then
+    if curl -s -o /dev/null -m 2 $proxy; then oks+="GOPROXY ${${proxy#*://}%%/*}"
+    else problems+="GOPROXY ${${proxy#*://}%%/*} недоступен (VPN?)"; fi
+  fi
+  for pat in ${(s:,:)"$(cd ~ && GOTOOLCHAIN=local go env GOPRIVATE)"}; do
+    host=${pat%%/*}
+    [[ $host == *'*'* || -z $host ]] && continue
+    if curl -s -o /dev/null -m 2 https://$host; then oks+="$host"
+    else problems+="$host недоступен (VPN?)"; fi
+  done
+}
+
+check() {
+  problems=() oks=()
+  check_docker
+  check_go
+  check_net
+
+  if [[ -n $session ]] && tmux has-session -t "=$session" 2>/dev/null; then
+    if (( $#problems )); then
+      local badge=$problems[1]
+      (( $#problems > 1 )) && badge+=" · +$(( $#problems - 1 ))"
+      tmux set -t "=$session:" @dev_warn $badge
+    else
+      tmux set -t "=$session:" -u @dev_warn
+    fi
+  fi
+
+  if (( quiet )); then
+    (( $#problems )) || return 0
+    local client
+    for client in ${(f)"$(tmux list-clients -t "=$session" -F '#{client_name}' 2>/dev/null)"}; do
+      tmux display-message -c $client -d 8000 "dev: ${(j: · :)problems}   (подробно: dev -c)"
+    done
+    return 0
+  fi
+
+  local x
+  print -r -- "dev -c: ${root/#$HOME/~}"
+  for x in $oks;      print -r -- $'  \e[32m✓\e[0m '"$x"
+  for x in $problems; print -r -- $'  \e[33m⚠\e[0m '"$x"
+  (( $#oks + $#problems )) || print -r -- '  нечего проверять: нет compose-файла и go.mod'
+}
+
+# ============================================================
+# Раскладка
+# ============================================================
+
+first= current= last=   # первое окно сессии, текущее окно, его последняя панель
+
+win()  { open_pane window "$@" }
+pane() { open_pane pane '' "$@" }
+
+open_pane() {
+  local kind=$1 name=${2//[.:]/_} run=0 dir=$root cmd= out id
+  shift 2
+  while (( $# )); do
+    case $1 in
+      -x) run=1 ;;
+      -c) if [[ $2 == /* ]]; then dir=$2; else dir=$root/$2; fi; shift ;;
+      *)  cmd=$1 ;;
+    esac
+    shift
+  done
+  [[ -d $dir ]] || { print -u2 -r -- "dev: нет каталога $dir"; dir=$root }
+
+  if [[ $kind == pane ]]; then
+    [[ -n $current ]] || die 'pane до первого win'
+    # Делить последнюю панель: так порядок панелей — как в файле раскладки.
+    id=$(tmux split-window -d -v -P -F '#{pane_id}' -t $last -c $dir) || return 1
+    tmux select-layout -t $current even-vertical
+  else
+    if [[ -z $first ]]; then
+      out=$(tmux new-session -d -P -F '#{window_id} #{pane_id}' -s $session -n $name -c $dir) ||
+        die "не удалось создать сессию $session"
+      first=${out% *}
+    else
+      out=$(tmux new-window -d -P -F '#{window_id} #{pane_id}' -t "=$session:" -n $name -c $dir) || return 1
+    fi
+    current=${out% *} id=${out#* }
+  fi
+  last=$id
+
+  [[ -n $cmd ]] || return 0
+  tmux send-keys -t $id -l -- $cmd
+  (( run )) && tmux send-keys -t $id Enter
+  return 0
+}
+
+make_targets() {
+  [[ -f $1/Makefile ]] && sed -n 's/^\([A-Za-z0-9_][A-Za-z0-9_.-]*\):.*/\1/p' $1/Makefile
+}
+
+# Команды окна server: цель run, иначе по одной на cmd/* (не больше трёх).
+server_cmds() {
+  local -a targets bins
+  targets=($(make_targets $1))
+  if (( ${targets[(Ie)run]} )); then print -r -- 'devlog make run'; return; fi
+  bins=($1/cmd/*(N/:t))
+  (( $#bins )) && print -rl -- "devlog go run ./cmd/"${^bins[1,3]}
+}
+
+up_cmd() {
+  local -a targets
+  compose_file >/dev/null || return 0
+  targets=($(make_targets $root))
+  if (( ${targets[(Ie)up]} )); then print -r -- 'make up'; else print -r -- 'docker compose up -d'; fi
+}
+
+is_project() { [[ -f $1/go.mod || -f $1/go.work || -f $1/package.json ]] }
+
+auto_layout() {
+  local sub dir c w
+  local -a subs cmds
+  if (( $# )); then
+    for sub in $@; do
+      sub=${sub%/}
+      [[ -d $root/$sub ]] || die "нет каталога $sub"
+      subs+=$sub
+    done
+  elif ! is_project $root; then
+    for dir in $root/*(N/); do
+      if is_project $dir; then subs+=${dir:t}; fi
+    done
+    (( $#subs >= 2 )) || subs=()
+  fi
+
+  if (( $#subs )); then
+    for sub in $subs; do
+      w=${sub//[.:]/_}
+      cmds=(${(f)"$(server_cmds $root/$sub)"})
+      win $w/editor -c $sub -x 'nvim .'
+      win $w/server -c $sub $cmds[1]
+      for c in $cmds[2,-1]; do pane -c $sub $c; done
+      win $w/tests -c $sub
+    done
+  else
+    cmds=(${(f)"$(server_cmds $root)"})
+    win editor -x 'nvim .'
+    win server $cmds[1]
+    for c in $cmds[2,-1]; do pane $c; done
+    win tests
+  fi
+  win infra "$(up_cmd)"
+  [[ ${DEV_SHELL:-1} == 0 ]] || win shell
+}
+
+# ============================================================
+# Режимы
+# ============================================================
+
+detach=0 quiet=0 mode=open branch=
+while [[ ${1:-} == -* ]]; do
+  case $1 in
+    -d) detach=1 ;;
+    -q) quiet=1 ;;
+    -k) mode=kill ;;
+    -c) mode=check ;;
+    -b) [[ -n ${2:-} ]] || die '-b: нужно имя ветки'; branch=$2; shift ;;
+    -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' $self; exit 0 ;;
+    *)  die "неизвестный флаг $1 (dev -h)" ;;
+  esac
+  shift
+done
+
+attach() {
+  if (( detach )); then print -r -- $session; exit 0; fi
+  [[ -n $TMUX ]] && exec tmux switch-client -t "=$session"
+  exec tmux attach-session -t "=$session"
+}
+
+if [[ $mode == check ]]; then
+  # dev -c [-q] [сессия]: корень — из опции сессии, которую поставил dev.
+  session=${1:-}
+  [[ -z $session && -n $TMUX ]] && session=$(tmux display -p '#S')
+  [[ -n $session ]] && root=$(tmux show -t "=$session:" -qv @dev_root 2>/dev/null)
+  if [[ -z $root ]]; then
+    (( quiet )) && exit 0   # не dev-сессия
+    root=$(find_root $PWD) session=
+  fi
+  check
+  exit 0
+fi
+
+if [[ $mode == kill ]]; then
+  [[ -n $TMUX ]] || die '-k закрывает текущую сессию — запускать внутри tmux'
+  session=$(tmux display -p '#S')
+  root=$(tmux show -t "=$session:" -qv @dev_root)
+  wt=$(tmux show -t "=$session:" -qv @dev_worktree)
+  project=$(tmux show -t "=$session:" -qv @dev_project)
+
+  stop_compose=0 others=
+  if [[ -z $wt && -n $root ]] && compose_file >/dev/null && (( $+commands[docker] )); then
+    # Стек общий для проекта: не останавливать, пока открыта сессия задачи.
+    others=$(tmux list-sessions -F '#{session_name} #{@dev_project}' |
+      awk -v p="$project" -v s="$session" '$2 == p && $1 != s {print $1}' | head -1)
+    [[ -z $others ]] && stop_compose=1
+  fi
+
+  question="Закрыть сессию $session со всеми процессами (несохранённое в nvim пропадёт)"
+  [[ -n $wt ]] && question+=" и удалить worktree ${wt/#$HOME/~}"
+  (( stop_compose )) && question+=" и остановить docker compose"
+  read -q "?$question? [y/N] " || { print; exit 1 }
+  print
+
+  note=
+  if [[ -n $wt ]]; then
+    if [[ -n $(git -C $wt status --porcelain 2>/dev/null) ]]; then
+      note="worktree оставлен: в ${wt/#$HOME/~} есть незакоммиченные изменения"
+    else
+      main=${$(git -C $wt rev-parse --path-format=absolute --git-common-dir):h}
+      cd $main && git worktree remove $wt && note="worktree удалён, ветка осталась"
+    fi
+  elif (( stop_compose )); then
+    (cd $root && docker compose stop) && note='docker compose остановлен'
+  elif [[ -n $others ]]; then
+    note="docker compose оставлен: проект открыт в $others"
+  fi
+  [[ -n $note ]] && tmux display-message -d 6000 "dev: $note"
+  tmux kill-session -t "=$session"
+  exit 0
+fi
+
+# Корень сессии.
+if [[ -n $branch ]]; then
+  root=$(find_root $PWD)
+  top=$(git -C $root rev-parse --show-toplevel 2>/dev/null) || die '-b: не git-репозиторий'
+  main=${$(git -C $root rev-parse --path-format=absolute --git-common-dir):h}
+  rel=${root#$top}   # проект может лежать в подкаталоге репозитория
+  wt=$(git -C $main worktree list --porcelain |
+    awk -v b="refs/heads/$branch" '/^worktree /{p = substr($0, 10)} $0 == "branch " b {print p}')
+  if [[ -z $wt ]]; then
+    wt=${main:h}/.worktrees/${main:t}@${branch//\//-}
+    if git -C $main show-ref -q --verify refs/heads/$branch ||
+       git -C $main show-ref -q --verify refs/remotes/origin/$branch; then
+      git -C $main worktree add $wt $branch >&2 || exit 1
+    else
+      base=origin/HEAD
+      git -C $main rev-parse -q --verify $base >/dev/null || base=HEAD
+      git -C $main worktree add -b $branch $wt $base >&2 || exit 1
+      print -u2 -r -- "dev: ветка $branch создана от $(git -C $main rev-parse --abbrev-ref $base) $(git -C $main rev-parse --short $base)"
+    fi
+  fi
+  root=$wt$rel
+  [[ -d $root ]] || die "в ветке $branch нет каталога ${rel#/}"
+elif (( $# )); then
+  root=$PWD
+else
+  root=$(find_root $PWD)
+fi
+
+name_session
+if tmux has-session -t "=$session" 2>/dev/null; then
+  attach
+fi
+
+layout=$layouts/$project.zsh
+if [[ -f $layout ]]; then
+  source $layout
+  [[ -n $first ]] || die "в $layout нет ни одного win"
+else
+  auto_layout "$@"
+fi
+
+tmux set -t "=$session:" @dev_root $root
+tmux set -t "=$session:" @dev_project $project
+[[ -n $wt ]] && tmux set -t "=$session:" @dev_worktree $wt
+tmux select-window -t $first
+tmux run-shell -b "${(q)self} -c -q ${(q)session}"   # проверка окружения в фоне
+attach

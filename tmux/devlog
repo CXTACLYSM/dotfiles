@@ -1,0 +1,59 @@
+#!/bin/zsh
+# Читаемые JSON-логи Go-сервисов (slog, zap): одна строка на запись —
+#   15:04:05 ERROR save task  id=42 err=connection refused
+# время, уровень цветом, сообщение, остальные поля key=value; err/error
+# красным. Строки не в JSON (паника, вывод go run, make) — как есть.
+#
+#   devlog make run              запустить, форматировать, вернуть код команды
+#   kubectl logs -f pod | devlog только форматировать stdin
+#
+# В режиме запуска сырой вывод пишется в ~/.cache/dev/<сессия>/<команда>.log
+# (прошлый запуск — .log.1): для grep и полного JSON, который на экране сжат.
+
+emulate -L zsh
+
+filter='
+def c($code): "\u001b[\($code)m";
+def dim: c("90");
+def lvlcolor:
+  if   startswith("ERR") or startswith("FATAL") or startswith("PANIC") then c("31")
+  elif startswith("WARN") then c("33")
+  elif startswith("DEBUG") then c("90")
+  else c("36") end;
+def clock:
+  if type == "number" then (if . > 1e12 then . / 1000 else . end | floor | strflocaltime("%H:%M:%S"))
+  elif type == "string" then (.[11:19] // .)
+  else "" end;
+def show: if type == "string" then . else tojson end;
+
+(try fromjson catch null) as $j
+| if ($j | type) == "object" and ($j.msg // $j.message // $j.level // $j.lvl) != null then
+    ($j.time // $j.ts // $j.timestamp // null | clock) as $t
+    | ($j.level // $j.lvl // $j.severity // "" | show | ascii_upcase) as $l
+    | ($j.msg // $j.message // "" | show) as $m
+    | ($j | del(.time, .ts, .timestamp, .level, .lvl, .severity, .msg, .message)
+          | to_entries
+          | map(if (.key == "err" or .key == "error")
+                then c("31") + .key + "=" + (.value | show) + c("0")
+                else dim + .key + "=" + c("0") + (.value | show) end)
+          | join(" ")) as $kv
+    | dim + $t + c("0") + " " + ($l | lvlcolor) + (($l + "     ")[0:5]) + c("0") + " "
+      + (if ($l | startswith("ERR")) then c("1") + $m + c("0") else $m end)
+      + (if $kv == "" then "" else "  " + $kv end)
+  else . end
+'
+
+fmt() { jq -R -r --unbuffered $filter }
+
+(( $# )) || { fmt; exit }
+
+if [[ -n $TMUX ]]; then
+  session=$(tmux display -p '#S' 2>/dev/null)
+fi
+dir=$HOME/.cache/dev/${session:-${PWD:t}}
+log=$dir/${${(j:-:)@}//[^A-Za-z0-9_.-]/_}.log
+mkdir -p $dir
+[[ -f $log ]] && mv -f $log $log.1
+
+"$@" 2>&1 | tee $log | fmt
+exit ${pipestatus[1]}

@@ -1,0 +1,16 @@
+# lazygit — prefix g в tmux (tmux/tmux.conf). install.sh ставит симлинк:
+#   ~/Library/Application Support/lazygit/config.yml → этот файл
+
+git:
+  # Diff в lazygit — через delta, как и `git diff` в шелле (тема и номера
+  # строк — из [delta] в ~/.gitconfig). Клавиша | переключает рендерер:
+  # difftastic (diff по синтаксису Go: переформатирование не считается
+  # изменением) и обычный вывод git.
+  diffRenderers:
+    - name: delta
+      command: delta --{{colorScheme}} --paging=never
+    - name: difftastic
+      type: extDiff
+      command: difft --color=always --background={{colorScheme}} --context={{diffContext}}
+    - name: git
+      type: rawGit

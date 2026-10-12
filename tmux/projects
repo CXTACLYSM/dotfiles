@@ -1,0 +1,71 @@
+#!/bin/zsh
+# Переключатель проектов — prefix f во всплывающем окне tmux.
+# Сверху открытые сессии (последняя посещённая — первой, текущая не
+# показывается), ниже каталоги проектов, для которых сессии ещё нет.
+# Enter — перейти; для каталога сессия создаётся через `dev` с теми же
+# окнами editor/server/tests/…; Ctrl-X — закрыть выбранную сессию.
+# Справа превью: экран сессии или git log и содержимое каталога.
+#
+# Где искать проекты — $DEV_PROJECT_ROOTS (через пробел), по умолчанию
+# ~/workspace и ~/Projects: их подкаталоги, git-репозитории уровнем ниже и
+# worktree задач из .worktrees.
+
+emulate -L zsh
+path=(/opt/homebrew/bin $path)   # popup живёт в окружении сервера tmux
+
+self=${0:A}
+dev=${0:A:h}/dev
+roots=(${=DEV_PROJECT_ROOTS:-$HOME/workspace $HOME/Projects})
+tab=$'\t'
+
+# Строки для fzf: "вид<TAB>как показать<TAB>сессия или каталог".
+list() {
+  local current line name dir
+  local -A open
+  local -aU dirs
+  current=$(tmux display -p '#S')
+  for line in ${(f)"$(tmux list-sessions -F '#{session_last_attached} #{session_name}' | sort -rn)"}; do
+    name=${line#* }
+    open[$name]=1
+    [[ $name == $current ]] && continue
+    print -r -- "session$tab● $name$tab$name"
+  done
+  for dir in $roots; do
+    # .worktrees — сессии задач (dev -b): после перезагрузки открываются отсюда.
+    dirs+=($dir/*(N/) $dir/*/*/.git(N:h) $dir/.worktrees/*(N/))
+  done
+  for dir in ${(o)dirs}; do
+    name=${${dir:t}//[ .:]/_}   # имя сессии — как его даёт dev
+    (( ${+open[$name]} )) && continue
+    print -r -- "dir$tab  ${dir/#$HOME/~}$tab$dir"
+  done
+}
+
+preview() {
+  if [[ $1 == session ]]; then
+    # Низ экрана сессии: там промпт и последний вывод. $(…) срезает
+    # пустые строки под промптом.
+    print -r -- "$(tmux capture-pane -ep -t "=$2:")" | tail -n ${FZF_PREVIEW_LINES:-40}
+  else
+    git -C $2 log --oneline --decorate --color=always -12 2>/dev/null && print
+    ls -p $2
+  fi
+}
+
+case ${1:-} in
+  --list)    list; exit ;;
+  --preview) preview $2 $3; exit ;;
+  --kill)    [[ $2 == session ]] && tmux kill-session -t "=$3"; exit 0 ;;
+esac
+
+choice=$(list | fzf --delimiter $tab --with-nth 2 --reverse --tiebreak index \
+  --prompt 'проект › ' --header 'Enter — перейти · Ctrl-X — закрыть сессию' \
+  --preview "$self --preview {1} {3}" --preview-window right,55% \
+  --bind "ctrl-x:execute-silent($self --kill {1} {3})+reload($self --list)") || exit 0
+
+kind=${choice%%$tab*}
+target=${choice##*$tab}
+if [[ $kind == dir ]]; then
+  target=$(cd $target && $dev -d) || exit 1
+fi
+tmux switch-client -t "=$target"
