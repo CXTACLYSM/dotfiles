@@ -171,9 +171,15 @@ else
   info "пропущено (--no-brew)"
 fi
 
+# zsh запоминает содержимое PATH при первом обращении к $commands: без
+# rehash только что поставленные brew bundle программы не видны.
+rehash
 for tool in tmux nvim go gopls dlv fzf fd rg jq tree-sitter delta lazygit difft git; do
   (( $+commands[$tool] )) || {
-    [[ $mode == install ]] && die "нет команды $tool — запусти без --no-brew"
+    if [[ $mode == install ]]; then
+      (( brew_step )) && die "нет команды $tool после brew bundle — проверь вывод brew выше"
+      die "нет команды $tool — запусти без --no-brew"
+    fi
     info "нет команды $tool (поставит brew bundle)"
   }
 done
