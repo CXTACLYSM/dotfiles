@@ -475,6 +475,15 @@ local symbol_icons = {
 }
 
 fzf.setup({
+    -- Preview to the right of the list while the picker is wider than 80
+    -- columns (nvim from about 90); only in a very narrow window does it
+    -- move below the list.
+    winopts = {
+        width = 0.9,
+        preview = {
+            flip_columns = 80,
+        },
+    },
     lsp = {
         symbols = {
             -- 1 = "<icon> <kind>", so the word stays readable even if a glyph
