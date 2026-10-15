@@ -362,4 +362,62 @@ sed -i '' 's/"hello, "/"hi, "/' "$repo/main.go"
       "$repo/main.go" -l "$tests/change_tree_smoke.lua"
 )
 
+step "Rename"
+module="$work/rename"
+mkdir -p "$module/store" "$module/service"
+cat > "$module/go.mod" <<'EOF_RENAME_MOD'
+module example.com/app
+
+go 1.23
+EOF_RENAME_MOD
+cat > "$module/store/store.go" <<'EOF_RENAME_STORE'
+package store
+
+type Store struct{}
+
+func (s *Store) Save(name string) error {
+	return nil
+}
+EOF_RENAME_STORE
+cat > "$module/service/service.go" <<'EOF_RENAME_SERVICE'
+package service
+
+import "example.com/app/store"
+
+type Service struct{ st *store.Store }
+
+func (s Service) Run() error {
+	return s.st.Save("x")
+}
+EOF_RENAME_SERVICE
+cat > "$module/main.go" <<'EOF_RENAME_MAIN'
+package main
+
+import (
+	"example.com/app/service"
+	"example.com/app/store"
+)
+
+func main() {
+	_ = (&store.Store{}).Save("y")
+	_ = service.Service{}.Run()
+}
+EOF_RENAME_MAIN
+echo '# notes' > "$module/store/README.md"
+module="$(cd "$module" && pwd -P)"
+(
+  cd "$module"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    GOCACHE="$work/go-cache" \
+    GOPATH="$work/go-path" \
+    GOMODCACHE="$work/go-mod-cache" \
+    GOPROXY=off \
+    NVIM_RENAME_ROOT="$module" \
+    NVIM_RENAME_EXTRA=README.md \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/store/store.go" -l "$tests/rename_smoke.lua"
+)
+
 printf '\nVERIFY_OK\n'

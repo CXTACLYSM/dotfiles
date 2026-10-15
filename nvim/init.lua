@@ -71,10 +71,12 @@ map("v", ">", ">gv")
 -- Clear search highlight.
 map("n", "<Esc>", "<cmd>nohlsearch<CR>")
 
--- Scope-aware rename: for a local Go variable, gopls changes only that
--- declaration and its semantic uses, not equal text in another scope.
+-- Semantic rename through gopls across the workspace: methods and types in
+-- every package, a package (on its `package` clause) with its imports and
+-- directory; a local variable only in its own scope. Every touched file is
+-- written and the changed places go to the quickfix list (lua/go_rename.lua).
 local function rename_symbol()
-    vim.lsp.buf.rename()
+    require("go_rename").rename()
 end
 
 map("n", "grn", rename_symbol, {

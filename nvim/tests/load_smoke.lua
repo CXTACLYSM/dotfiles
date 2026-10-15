@@ -23,6 +23,7 @@ local modules = {
     "completion_retrigger",
     "big_file",
     "go_debug",
+    "go_rename",
     "change_tree.go_index",
     "change_tree.semantic_graph",
     "change_tree",
