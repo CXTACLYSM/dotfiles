@@ -30,6 +30,7 @@ for _, lhs in ipairs({
     "<leader>q", "<leader>sd", "<leader>sq", "<leader>ih", "]q", "[q",
     "]f", "[f", "]a", "[a",
     "gre", "grc", "gro", "<leader>ct", "<leader>cT",
+    "gp", "gP", "<leader>ga", "<leader>*", "<leader>.",
 }) do
     assert(has_map("n", lhs), "missing normal mapping " .. lhs)
 end
@@ -41,6 +42,8 @@ end
 assert(vim.fn.maparg("<leader>cr", "n") == "", "<leader>cr stays free")
 assert((vim.fn.maparg("grr", "n", false, true).desc or ""):find("implementations", 1, true), "grr merges implementations")
 assert(has_map("i", "(") and has_map("i", "<BS>"), "insert-mode pairs")
+assert(has_map("x", "<leader>*"), "grep selection")
+assert(#vim.api.nvim_get_autocmds({ group = "breadcrumbs" }) > 0, "breadcrumbs attach to windows")
 
 assert(type(require("dap").adapters.delve) == "function", "delve adapter")
 assert(require("big_file").opts.max_lines == 10000, "big file threshold")

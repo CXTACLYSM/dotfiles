@@ -159,11 +159,20 @@ big_file.setup({
     max_lines = 10000,
 })
 
+-- Folds follow the syntax tree: zM leaves only the declarations (an outline
+-- of the file), zR opens everything again; files open unfolded. Big files
+-- keep manual folds, like they keep regex-free highlighting.
+opt.foldtext = ""
+opt.fillchars:append({ fold = " " })
+
 vim.api.nvim_create_autocmd("FileType", {
     pattern = { "go", "gomod", "gosum", "gowork" },
     callback = function(event)
         if not big_file.is_marked(event.buf) then
             vim.treesitter.start(event.buf)
+            vim.opt_local.foldmethod = "expr"
+            vim.opt_local.foldexpr = "v:lua.vim.treesitter.foldexpr()"
+            vim.opt_local.foldlevel = 99
         end
     end,
 })
@@ -303,6 +312,36 @@ map("n", "gro", function()
     go_calls.show("out")
 end, {
     desc = "Call graph: callees of the symbol under the cursor",
+})
+
+
+-- ============================================================
+-- Navigation
+-- ============================================================
+
+-- gp / gP: the definition / type definition of the symbol under the cursor
+-- in a float next to it (whole declaration with its doc comment); Enter
+-- jumps there, q closes, gp again focuses the float to scroll. Replaces the
+-- rarely used native put-and-move gp / gP.
+local peek = require("peek")
+
+map("n", "gp", peek.definition, {
+    desc = "Peek definition",
+})
+
+map("n", "gP", peek.type_definition, {
+    desc = "Peek type definition",
+})
+
+-- Window bar: file › type › method › closure around the cursor.
+require("breadcrumbs").setup()
+
+-- Space ga: file ↔ its test; a missing test file starts with the package
+-- clause and the testing import.
+map("n", "<leader>ga", function()
+    require("go_alt").toggle()
+end, {
+    desc = "Go file / test file",
 })
 
 
@@ -528,6 +567,36 @@ map("n", "<leader>/", function()
     })
 end, {
     desc = "Grep project",
+})
+
+-- The word under the cursor (whole word) or the selection, across the project.
+map("n", "<leader>*", function()
+    fzf.grep_cword({
+        cwd = project_root,
+        resume = false,
+    })
+end, {
+    desc = "Grep word under cursor",
+})
+
+map("x", "<leader>*", function()
+    fzf.grep_visual({
+        cwd = project_root,
+        resume = false,
+    })
+end, {
+    desc = "Grep selection",
+})
+
+-- Files of the current package: the directory of the current file.
+map("n", "<leader>.", function()
+    fzf.files({
+        cwd = vim.fn.expand("%:p:h"),
+        resume = false,
+        hidden = true,
+    })
+end, {
+    desc = "Files of the current package",
 })
 
 map("n", "<leader>b", "<cmd>FzfLua buffers<CR>", {

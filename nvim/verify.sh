@@ -362,6 +362,60 @@ sed -i '' 's/"hello, "/"hi, "/' "$repo/main.go"
       "$repo/main.go" -l "$tests/change_tree_smoke.lua"
 )
 
+step "Navigation"
+module="$work/nav"
+mkdir -p "$module"
+cat > "$module/go.mod" <<'EOF_NAV_MOD'
+module example.com/nav
+
+go 1.23
+EOF_NAV_MOD
+cat > "$module/main.go" <<'EOF_NAV_MAIN'
+package main
+
+import "fmt"
+
+// Order is a purchase.
+type Order struct {
+	ID    int
+	Total int
+}
+
+// greeting builds a greeting.
+// It has two comment lines.
+func greeting(name string) string {
+	return "hello, " + name
+}
+
+type Service struct{ prefix string }
+
+func (s *Service) Describe(o Order) string {
+	label := fmt.Sprintf("%d", o.Total)
+	format := func() string {
+		return s.prefix + label
+	}
+	return format()
+}
+
+func main() {
+	var o Order
+	fmt.Println(greeting("x"), (&Service{}).Describe(o))
+}
+EOF_NAV_MAIN
+module="$(cd "$module" && pwd -P)"
+(
+  cd "$module"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    GOCACHE="$work/go-cache" \
+    GOPATH="$work/go-path" \
+    GOMODCACHE="$work/go-mod-cache" \
+    GOPROXY=off \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/main.go" -l "$tests/nav_smoke.lua"
+)
+
 step "Rename"
 module="$work/rename"
 mkdir -p "$module/store" "$module/service"
