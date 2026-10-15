@@ -1,0 +1,178 @@
+#!/bin/zsh
+# Документация проекта — prefix i во всплывающем окне tmux (как prefix t
+# с дедлайнами). Проект — git-репозиторий или каталог с go.mod вокруг
+# каталога текущей панели.
+#
+# Слева список, справа превью:
+#   док      README и остальные .md проекта (docs/, adr/ …), README первым;
+#   api      контракты: .proto, OpenAPI / Swagger (yaml, json); сторонние
+#            proto (vendor*, third_party, google/…) не показываются;
+#   пакет    Go-пакеты модуля с первой фразой doc-комментария, в превью —
+#            `go doc` пакета;
+#   клавиши  шпаргалка этого окружения (README репозитория настроек).
+# Набор текста фильтрует список. Enter — открыть целиком в nvim только для
+# чтения (q — назад к списку; в markdown gO — оглавление), Esc — закрыть.
+#
+# Сеть не нужна: `go doc` идёт с GOPROXY=off и GOTOOLCHAIN=local, а если он
+# не справился (нет toolchain нужной версии) — превью собирается из
+# исходников: doc-комментарий и экспортируемые объявления.
+#
+#   docs [каталог]                 интерактивно
+#   docs --list [каталог]          только список (для проверки)
+#   docs --preview <вид> <путь>    превью одного пункта
+
+emulate -L zsh
+setopt extended_glob pipe_fail no_unset
+
+self=${0:A}
+dotfiles=${self:h:h}
+
+rst=$'\e[0m'; bold=$'\e[1m'; dim=$'\e[38;5;244m'
+blue=$'\e[38;5;111m'; green=$'\e[38;5;150m'; yellow=$'\e[38;5;221m'; mauve=$'\e[38;5;183m'
+
+# Корень проекта для каталога $1: git, иначе ближайший go.mod выше.
+project_root() {
+  local dir=${1:A} top
+  top=$(git -C $dir rev-parse --show-toplevel 2>/dev/null) && { print -r -- $top; return }
+  local d=$dir
+  while [[ $d != / ]]; do
+    [[ -f $d/go.mod ]] && { print -r -- $d; return }
+    d=${d:h}
+  done
+  print -r -- $dir
+  return 1
+}
+
+# Сторонний код: не документация проекта.
+ignored=(-g '!.git' -g '!vendor*/**' -g '!node_modules/**' -g '!third_party/**'
+  -g '!**/google/**' -g '!**/validate/**' -g '!**/protoc-gen-openapiv2/**' -g '!**/testdata/**')
+
+# Строки списка: «метка<TAB>название<TAB>вид<TAB>путь». Вызывается с
+# stdin из /dev/null: rg без пути ищет в stdin, если тот не терминал.
+entries() {
+  local -a depth md api gofiles
+  (( ${+not_project} )) && depth=(--max-depth 2)
+
+  md=(${(f)"$(rg --files --hidden $depth $ignored -g '*.md' -g '*.markdown' 2>/dev/null | sort)"})
+  # README в корне — первым, остальные — по пути.
+  if (( ${md[(Ie)README.md]} )); then
+    md=(README.md ${md:#README.md})
+  fi
+  local f
+  for f in $md; do
+    print -r -- "${blue}док${rst}"$'\t'"$f"$'\t'md$'\t'"$f"
+  done
+
+  api=(${(f)"$(rg --files $depth $ignored -g '*.proto' -g '*swagger*.{json,yaml,yml}' \
+    -g '*openapi*.{json,yaml,yml}' 2>/dev/null | sort)"})
+  for f in $api; do
+    print -r -- "${green}api${rst}"$'\t'"$f"$'\t'api$'\t'"$f"
+  done
+
+  if [[ -f go.mod ]]; then
+    gofiles=(${(f)"$(rg --files $ignored -g '*.go' -g '!*_test.go' 2>/dev/null)"})
+    local -A doc
+    local line file text
+    # Первая строка «// Package x …» в каждом каталоге.
+    for line in ${(f)"$(rg --no-heading --with-filename --max-count 1 $ignored -g '*.go' -g '!*_test.go' \
+        '^// Package [[:alnum:]_]+' 2>/dev/null)"}; do
+      file=${line%%:*}; text=${line#*:}
+      [[ -n ${doc[${file:h}]-} ]] || doc[${file:h}]=${text#// }
+    done
+    local dir label
+    for dir in ${(ou)gofiles:h}; do
+      label=$dir
+      [[ $dir == . ]] && label="(корень модуля)"
+      text=${doc[$dir]-}
+      [[ -n $text ]] && label="$label ${dim}— ${text[1,90]}${rst}"
+      print -r -- "${yellow}пакет${rst}"$'\t'"$label"$'\t'pkg$'\t'"$dir"
+    done
+  fi
+
+  [[ -f $dotfiles/README.md ]] &&
+    print -r -- "${mauve}клавиши${rst}"$'\t'"шпаргалка окружения: nvim, tmux, zsh, git"$'\t'md$'\t'"$dotfiles/README.md"
+}
+
+# Markdown в цвете: заголовки, блоки кода, `код`, **жирное**, пункты списков.
+markdown() {
+  awk -v h="$bold$blue" -v c="$green" -v d="$dim" -v b="$yellow" -v B="$bold" -v r="$rst" '
+    /^```/ { fence = !fence; print d $0 r; next }
+    fence { print c $0 r; next }
+    /^#/ { print h $0 r; next }
+    {
+      gsub(/`[^`]+`/, c "&" r)
+      gsub(/\*\*[^*]+\*\*/, B "&" r)
+      if (match($0, /^[ \t]*[-*+] /)) {
+        $0 = substr($0, 1, RLENGTH - 2) b "•" r " " substr($0, RLENGTH + 1)
+      }
+      print
+    }'
+}
+
+# proto: service / rpc — синим, message / enum — жёлтым, комментарии — тускло.
+proto() {
+  awk -v s="$bold$blue" -v m="$yellow" -v d="$dim" -v r="$rst" '
+    /^[ \t]*\/\// { print d $0 r; next }
+    /^[ \t]*(service|rpc)[ \t]/ { print s $0 r; next }
+    /^[ \t]*(message|enum)[ \t]/ { print m $0 r; next }
+    { print }'
+}
+
+# Документация Go-пакета: go doc, а если он не смог — из исходников.
+package_doc() {
+  local dir=$1 all=${2-} out
+  out=$(GOPROXY=off GOTOOLCHAIN=local go doc ${all:+-all} ./${dir#./} 2>/dev/null)
+  if [[ -z $out ]]; then
+    out=$(rg --no-heading --no-filename -N -g '*.go' -g '!*_test.go' --max-depth 1 \
+      -e '^// ' -e '^package ' -e '^func ([A-Z]|\([^)]*\) [A-Z])' -e '^type [A-Z]' \
+      -e '^(var|const) [A-Z]' $dir 2>/dev/null)
+  fi
+  print -r -- $out
+}
+
+godoc_colors() {
+  awk -v s="$blue" -v k="$bold" -v r="$rst" '
+    NR == 1 && /^package / { print k $0 r; next }
+    /^(func|type|var|const) / { print s $0 r; next }
+    { print }'
+}
+
+preview() {
+  local kind=$1 target=$2
+  case $kind in
+    md) markdown < $target | head -400 ;;
+    api) if [[ $target == *.proto ]]; then proto < $target | head -400; else head -400 $target; fi ;;
+    pkg) package_doc $target | godoc_colors | head -400 ;;
+  esac
+}
+
+# Enter: целиком в nvim, только чтение; q — назад к списку.
+open_doc() {
+  local kind=$1 target=$2
+  local -a quit=(-c 'nnoremap <buffer> q <cmd>qa!<CR>')
+  case $kind in
+    pkg) package_doc $target all | nvim -R $quit -c 'set syntax=go' -c "file go\\ doc\\ ${target// /\\ }" - ;;
+    *) nvim -R $quit -- $target ;;
+  esac
+}
+
+case ${1-} in
+  --preview) preview $2 $3; exit ;;
+  --open) open_doc $2 $3; exit ;;
+  --list) list_only=1; shift ;;
+esac
+
+root=$(project_root ${1:-$PWD}) || not_project=1
+cd $root || exit 1
+
+if (( ${+list_only} )); then
+  entries </dev/null | sed $'s/\e\\[[0-9;]*m//g'
+  exit
+fi
+
+entries </dev/null | fzf --ansi --delimiter=$'\t' --with-nth=1,2 --tiebreak=index --layout=reverse \
+  --prompt="${root:t} › " \
+  --header='Enter — читать целиком (q — назад) · Esc — закрыть' \
+  --preview="${(q)self} --preview {3} {4}" \
+  --preview-window='right,60%,border-left,<60(down,55%,border-top)' \
+  --bind="enter:execute(${(q)self} --open {3} {4})"
