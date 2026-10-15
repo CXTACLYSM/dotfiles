@@ -164,7 +164,11 @@ end
 --   source_win = number?,
 --   keys = { [lhs] = function(ctx) end }?  -- ctx = { row, close, win }
 --   cursor_row = number?,
+--   folds = { { first, last } }?,  -- 1-based rows of groups that fold
+--   folded = boolean?,             -- start with the groups closed
 -- }
+-- A row without a target for the pressed key (a group header) opens or
+-- closes its fold instead; zM / zR / za work as in a file.
 -- Returns the tree window and the preview window (nil when there is no room).
 function M.open(spec, user_opts)
     local opts = vim.tbl_deep_extend("force", M.defaults, user_opts or {})
@@ -302,7 +306,12 @@ function M.open(spec, user_opts)
     for key in pairs(keys) do
         vim.keymap.set("n", key, function()
             local entry = current_entry()
-            jump(entry and entry.jumps and entry.jumps[key] or nil)
+            local target = entry and entry.jumps and entry.jumps[key] or nil
+            if target then
+                jump(target)
+            elseif vim.fn.foldlevel(vim.api.nvim_win_get_cursor(win)[1]) > 0 then
+                vim.cmd("normal! za")
+            end
         end, { buffer = buf, nowait = true })
     end
 
@@ -316,6 +325,21 @@ function M.open(spec, user_opts)
                 win = win,
             })
         end, { buffer = buf, nowait = true })
+    end
+
+    if spec.folds then
+        vim.wo[win].foldmethod = "manual"
+        vim.wo[win].foldenable = true
+        vim.wo[win].foldtext = ""
+        vim.wo[win].fillchars = "eob: ,fold: "
+        vim.api.nvim_win_call(win, function()
+            for _, fold in ipairs(spec.folds) do
+                if fold[2] > fold[1] then
+                    vim.cmd(string.format("%d,%dfold", fold[1], fold[2]))
+                end
+            end
+            vim.cmd(spec.folded and "normal! zM" or "normal! zR")
+        end)
     end
 
     if spec.cursor_row then

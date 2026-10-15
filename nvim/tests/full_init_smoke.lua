@@ -1,5 +1,6 @@
 -- The whole init.lua after startup: gopls settings, commands, mappings,
--- diagnostics, portable symbol icons and the change tree defaults.
+-- diagnostics, Tree-sitter parsers, portable symbol icons and the change
+-- tree defaults.
 local cfg = vim.lsp.config.gopls
 assert(cfg.cmd_env.GOTOOLCHAIN == nil, "gopls must inherit the shell GOTOOLCHAIN policy")
 assert(cfg.cmd_env.GOPROXY == nil, "gopls must inherit the shell GOPROXY")
@@ -31,6 +32,7 @@ for _, lhs in ipairs({
     "]f", "[f", "]a", "[a",
     "gre", "grc", "gro", "<leader>ct", "<leader>cT",
     "gp", "gP", "gI", "<leader>ga", "<leader>*", "<leader>.",
+    "<leader>st", "]t", "[t", "<leader>sQ",
 }) do
     assert(has_map("n", lhs), "missing normal mapping " .. lhs)
 end
@@ -49,6 +51,16 @@ local diagnostics = vim.diagnostic.config()
 assert(type(diagnostics.virtual_text) == "table" and diagnostics.virtual_text.current_line == true,
     "diagnostic text only on the cursor line")
 assert(diagnostics.virtual_lines == false, "no diagnostic lines that shift the text")
+for _, language in ipairs({ "go", "sql", "comment" }) do
+    assert(pcall(vim.treesitter.language.add, language), "parser " .. language)
+end
+local injections = vim.treesitter.query.get("go", "injections")
+assert(injections and vim.tbl_contains(injections.captures, "injection.content"), "Go injections")
+local found_sql = false
+for _, file in ipairs(vim.treesitter.query.get_files("go", "injections")) do
+    found_sql = found_sql or file:find("after/queries/go/injections.scm", 1, true) ~= nil
+end
+assert(found_sql, "SQL injection query for Go strings is on the runtimepath")
 
 assert(type(require("dap").adapters.delve) == "function", "delve adapter")
 assert(require("big_file").opts.max_lines == 10000, "big file threshold")

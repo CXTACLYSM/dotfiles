@@ -276,8 +276,9 @@ if (( $+commands[nvim] )); then
       act "сборка AST-хелпера → $(short $helper)" zsh -c "mkdir -p ${(q)helper:h} && cd ${(q)goindex} && GOTOOLCHAIN=local GOFLAGS= GOPROXY=off go build -trimpath -o ${(q)helper} ."
     fi
     # Плагины — git clone строго по коммитам nvim-pack-lock.json; парсеры
-    # Go — сборка nvim-treesitter (tree-sitter + компилятор C).
-    act "плагины по lock-файлу и парсеры Go" \
+    # Go, SQL и тегов в комментариях — сборка nvim-treesitter (tree-sitter +
+    # компилятор C).
+    act "плагины по lock-файлу и парсеры Tree-sitter" \
       nvim --headless -i NONE -u $config_home/nvim/init.lua \
         --cmd "lua vim.g.fzf_lua_server='bootstrap'" \
         -l $repo/nvim/tools/bootstrap.lua

@@ -1,4 +1,5 @@
-local parsers = { "go", "gomod", "gosum", "gowork" }
+-- Go, SQL (also inside Go strings) and comment tags (TODO, FIXME, …).
+local parsers = { "go", "gomod", "gosum", "gowork", "sql", "comment" }
 local check_only = vim.env.NVIM_BOOTSTRAP_CHECK_ONLY == "1"
 
 local function fail(message)

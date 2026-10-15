@@ -12,7 +12,7 @@ brew "jq"
 
 # Редактор и Go
 brew "neovim"
-brew "tree-sitter-cli" # компиляция парсеров Go для nvim-treesitter
+brew "tree-sitter-cli" # компиляция парсеров Tree-sitter (Go, SQL) для nvim-treesitter
 brew "go"
 brew "gopls"
 brew "delve"

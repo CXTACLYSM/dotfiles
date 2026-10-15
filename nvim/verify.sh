@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 # Регрессионные проверки nvim-конфига: синтаксис и загрузка модулей, чистые
 # Lua-тесты, AST-хелпер, закреплённые плагины и парсеры, полный старт
-# init.lua, gopls на фикстурах (module, standalone, политика toolchain) и
-# дерево правок на git-фикстуре. Плагины, парсеры и хелпер ставит
+# init.lua, gopls на фикстурах (module, standalone, политика toolchain),
+# дерево правок на git-фикстуре, навигация (подсмотр, реализации, строка
+# «где я», свёртки), SQL-запросы и TODO, переименование. Плагины, парсеры и хелпер ставит
 # install.sh; здесь они только проверяются.
 #
 #   nvim/verify.sh             проверить этот каталог как nvim-конфиг
@@ -454,6 +455,16 @@ module="$(cd "$module" && pwd -P)"
     nvim --headless -i NONE -u "$config_dir/init.lua" \
       --cmd "lua vim.g.fzf_lua_server='verify'" \
       "$module/main.go" -l "$tests/nav_smoke.lua"
+)
+
+step "SQL and TODO"
+(
+  cd "$work"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      -l "$tests/sql_todo_smoke.lua"
 )
 
 step "Rename"

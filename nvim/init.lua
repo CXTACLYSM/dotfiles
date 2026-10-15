@@ -171,8 +171,10 @@ big_file.setup({
 opt.foldtext = ""
 opt.fillchars:append({ fold = " " })
 
+-- SQL files too; SQL inside Go strings comes from
+-- after/queries/go/injections.scm.
 vim.api.nvim_create_autocmd("FileType", {
-    pattern = { "go", "gomod", "gosum", "gowork" },
+    pattern = { "go", "gomod", "gosum", "gowork", "sql" },
     callback = function(event)
         if not big_file.is_marked(event.buf) then
             vim.treesitter.start(event.buf)
@@ -611,6 +613,36 @@ map("n", "<leader>.", function()
     })
 end, {
     desc = "Files of the current package",
+})
+
+-- TODO comments: all of them in the project / the next and previous in the
+-- file (replaces the tag-match ]t / [t, unused with LSP navigation).
+local todo = require("todo")
+
+map("n", "<leader>st", function()
+    todo.pick(project_root)
+end, {
+    desc = "TODO comments of the project",
+})
+
+map("n", "]t", function()
+    todo.jump(true)
+end, {
+    desc = "Next TODO comment",
+})
+
+map("n", "[t", function()
+    todo.jump(false)
+end, {
+    desc = "Previous TODO comment",
+})
+
+-- Every SQL query of the project (Go strings, query builders, .sql files)
+-- grouped by table; Tab regroups by statement kind or by file.
+map("n", "<leader>sQ", function()
+    require("sql_nav").open(project_root)
+end, {
+    desc = "SQL queries of the project",
 })
 
 map("n", "<leader>b", "<cmd>FzfLua buffers<CR>", {

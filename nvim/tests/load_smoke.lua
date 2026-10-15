@@ -25,6 +25,8 @@ local modules = {
     "go_debug",
     "go_rename",
     "go_alt",
+    "todo",
+    "sql_nav",
     "peek",
     "breadcrumbs",
     "change_tree.go_index",
