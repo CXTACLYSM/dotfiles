@@ -1,5 +1,5 @@
 -- The whole init.lua after startup: gopls settings, commands, mappings,
--- portable symbol icons and the change tree defaults.
+-- diagnostics, portable symbol icons and the change tree defaults.
 local cfg = vim.lsp.config.gopls
 assert(cfg.cmd_env.GOTOOLCHAIN == nil, "gopls must inherit the shell GOTOOLCHAIN policy")
 assert(cfg.cmd_env.GOPROXY == nil, "gopls must inherit the shell GOPROXY")
@@ -30,7 +30,7 @@ for _, lhs in ipairs({
     "<leader>q", "<leader>sd", "<leader>sq", "<leader>ih", "]q", "[q",
     "]f", "[f", "]a", "[a",
     "gre", "grc", "gro", "<leader>ct", "<leader>cT",
-    "gp", "gP", "<leader>ga", "<leader>*", "<leader>.",
+    "gp", "gP", "gI", "<leader>ga", "<leader>*", "<leader>.",
 }) do
     assert(has_map("n", lhs), "missing normal mapping " .. lhs)
 end
@@ -44,6 +44,11 @@ assert((vim.fn.maparg("grr", "n", false, true).desc or ""):find("implementations
 assert(has_map("i", "(") and has_map("i", "<BS>"), "insert-mode pairs")
 assert(has_map("x", "<leader>*"), "grep selection")
 assert(#vim.api.nvim_get_autocmds({ group = "breadcrumbs" }) > 0, "breadcrumbs attach to windows")
+
+local diagnostics = vim.diagnostic.config()
+assert(type(diagnostics.virtual_text) == "table" and diagnostics.virtual_text.current_line == true,
+    "diagnostic text only on the cursor line")
+assert(diagnostics.virtual_lines == false, "no diagnostic lines that shift the text")
 
 assert(type(require("dap").adapters.delve) == "function", "delve adapter")
 assert(require("big_file").opts.max_lines == 10000, "big file threshold")

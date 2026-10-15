@@ -92,10 +92,16 @@ map("n", "<leader>d", vim.diagnostic.open_float, {
     desc = "Diagnostic",
 })
 
--- Keep diagnostics quiet while coding.
--- Signs/underlines stay visible; details are shown on demand with <leader>d.
+-- Keep diagnostics quiet while coding: signs and underlines everywhere, the
+-- message only at the end of the line the cursor is on (no lines shift);
+-- the full text with <leader>d.
 vim.diagnostic.config({
-    virtual_text = false,
+    virtual_text = {
+        current_line = true,
+        source = "if_many",
+        spacing = 2,
+        prefix = "●",
+    },
     virtual_lines = false,
     signs = true,
     underline = true,
@@ -319,10 +325,14 @@ end, {
 -- Navigation
 -- ============================================================
 
--- gp / gP: the definition / type definition of the symbol under the cursor
--- in a float next to it (whole declaration with its doc comment); Enter
--- jumps there, q closes, gp again focuses the float to scroll. Replaces the
--- rarely used native put-and-move gp / gP.
+-- gp / gP / gI: the definition / type definition / implementation of the
+-- symbol under the cursor in a float next to it (whole declaration with its
+-- doc comment). The key again focuses the float; inside, the same keys go
+-- one level deeper on the name under the cursor and Backspace comes back;
+-- Enter opens the line, q closes. gI on a call through an interface skips
+-- mocks and test files when one real implementation remains, several open
+-- a picker. Replaces the rarely used native gp / gP (put and move) and gI
+-- (insert at column 1).
 local peek = require("peek")
 
 map("n", "gp", peek.definition, {
@@ -331,6 +341,10 @@ map("n", "gp", peek.definition, {
 
 map("n", "gP", peek.type_definition, {
     desc = "Peek type definition",
+})
+
+map("n", "gI", peek.implementation, {
+    desc = "Peek implementation",
 })
 
 -- Window bar: file › type › method › closure around the cursor.

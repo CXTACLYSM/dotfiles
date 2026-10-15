@@ -1,7 +1,8 @@
 -- Navigation end to end on main.go of the fixture verify.sh writes:
 -- breadcrumbs in the window bar, Tree-sitter folds, peek of a definition /
--- a struct field / a type / a local name, Enter from the peek float, the
--- second gp focusing it, and the file ↔ test toggle.
+-- a struct field / a type / a local name / an implementation (the mock set
+-- aside, two real ones in a picker), going deeper inside the float and back,
+-- Enter from the float, the second gp focusing it, and file ↔ test.
 local attached = vim.wait(20000, function()
     return #vim.lsp.get_clients({ bufnr = 0, name = "gopls" }) == 1
 end, 50)
@@ -55,14 +56,30 @@ print("FOLDS_OK")
 -- Peek.
 local peek = require("peek")
 
-local function float_of(buf)
+local function title_of(win)
+    local title = vim.api.nvim_win_get_config(win).title
+    return type(title) == "table" and title[1][1] or title or ""
+end
+
+local function footer_of(win)
+    local footer = vim.api.nvim_win_get_config(win).footer
+    return type(footer) == "table" and footer[1][1] or footer or ""
+end
+
+-- The float once its title contains `pattern`.
+local function float_with(pattern)
     local win
     vim.wait(10000, function()
-        win = vim.b[buf].lsp_floating_preview
-        return win ~= nil and vim.api.nvim_win_is_valid(win)
+        win = peek.float()
+        return win ~= nil and title_of(win):find(pattern, 1, true) ~= nil
     end, 50)
-    assert(win and vim.api.nvim_win_is_valid(win), "peek float did not open")
+    assert(win and title_of(win):find(pattern, 1, true), "no peek float with " .. pattern
+        .. (win and (": " .. title_of(win)) or ""))
     return win
+end
+
+local function contents(win)
+    return table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(win), 0, -1, false), "\n")
 end
 
 local function peek_at(kind, on, needle)
@@ -70,9 +87,15 @@ local function peek_at(kind, on, needle)
     local row, col = at(on, needle)
     vim.api.nvim_win_set_cursor(source_win, { row, col })
     peek[kind]()
-    local win = float_of(source_buf)
-    local buf = vim.api.nvim_win_get_buf(win)
-    return win, buf, table.concat(vim.api.nvim_buf_get_lines(buf, 0, -1, false), "\n")
+    local win = float_with(({ definition = "definition", type_definition = "type", implementation = "implementation" })[kind])
+    return win, vim.api.nvim_win_get_buf(win), contents(win)
+end
+
+-- A buffer-local key of the float, as if pressed.
+local function press(lhs)
+    local map = vim.fn.maparg(lhs, "n", false, true)
+    assert(map.callback, lhs .. " is mapped here")
+    map.callback()
 end
 
 local function marked_line(buf)
@@ -94,19 +117,20 @@ local win, buf, text = peek_at("definition", 'fmt.Println(greeting("x")', "greet
 assert(text:find("^// greeting builds a greeting%.") and text:find("func greeting(name string) string {", 1, true)
     and text:find("}%s*$"), "function with its doc comment:\n" .. text)
 assert(not text:find("type Service", 1, true), "only that declaration:\n" .. text)
-local title = vim.api.nvim_win_get_config(win).title
-title = type(title) == "table" and title[1][1] or title
 local greeting_row = at("func greeting(", "greeting")
-assert(title:find("definition · main.go:" .. greeting_row, 1, true), "title: " .. vim.inspect(title))
+assert(title_of(win):find("definition · main.go:" .. greeting_row, 1, true), "title: " .. title_of(win))
+assert(footer_of(win):find("gp again", 1, true), "unfocused footer: " .. footer_of(win))
 
 -- The same key again focuses the float.
 peek.definition()
 assert(vim.api.nvim_get_current_win() == win, "second gp focuses the float")
+vim.wait(200, function()
+    return footer_of(win):find("open", 1, true) ~= nil
+end)
+assert(footer_of(win):find("⏎ open", 1, true), "focused footer lists the keys: " .. footer_of(win))
 
 -- Enter jumps to the definition in the source window.
-local enter = vim.fn.maparg("<CR>", "n", false, true)
-assert(enter.callback, "Enter is mapped in the float")
-enter.callback()
+press("<CR>")
 assert(vim.api.nvim_get_current_win() == source_win, "back in the source window")
 assert(vim.api.nvim_win_get_cursor(source_win)[1] == greeting_row, "cursor on the definition")
 assert(not vim.api.nvim_win_is_valid(win), "float closed after the jump")
@@ -130,6 +154,57 @@ assert(not text:find("func main", 1, true) and select(2, text:gsub("\n", "")) <=
 assert(marked_line(buf):find("label :=", 1, true), "local line marked")
 close(win)
 print("PEEK_OK")
+
+-- gI on a call through an interface: the generated mock is set aside.
+local save_row = at("func (memoryStore) Save", "Save")
+win, buf, text = peek_at("implementation", "return s.Save(o)", "Save")
+assert(title_of(win):find("implementation · main.go:" .. save_row .. " · +1 in mocks/tests", 1, true),
+    "title: " .. title_of(win))
+assert(text:find("^// Save keeps the order in memory%.") and text:find("func (memoryStore) Save", 1, true),
+    "the real implementation with its comment:\n" .. text)
+close(win)
+
+-- Deeper inside the float and back: persist → (gI on s.Save) → memoryStore.Save.
+local persist_row = at("func persist(", "persist")
+win = peek_at("definition", "_ = persist(", "persist")
+assert(title_of(win):find("definition · main.go:" .. persist_row, 1, true), "persist peeked")
+peek.definition()
+assert(vim.api.nvim_get_current_win() == win, "focused")
+local call_line = at("return s.Save(o)", "Save") - persist_row + 1
+vim.api.nvim_win_set_cursor(win, { call_line, select(2, at("return s.Save(o)", "Save")) })
+press("gI")
+float_with("‹ implementation · main.go:" .. save_row)
+assert(peek.float() == win, "the same float shows the next level")
+assert(contents(win):find("func (memoryStore) Save", 1, true), "deeper level shown")
+assert(footer_of(win):find("⌫ back", 1, true), "Backspace offered: " .. footer_of(win))
+press("<BS>")
+float_with("definition · main.go:" .. persist_row)
+assert(vim.api.nvim_win_get_cursor(win)[1] == call_line, "cursor restored on the way back")
+press("<CR>")
+assert(vim.api.nvim_get_current_win() == source_win and not peek.float(), "Enter leaves the float")
+assert(vim.api.nvim_win_get_cursor(source_win)[1] == at("return s.Save(o)", "Save"), "Enter opens the line under the cursor")
+print("PEEK_DEEPER_OK")
+
+-- Two real implementations: a picker instead of a guess.
+local fzf = require("fzf-lua")
+local real_exec, picked = fzf.fzf_exec, nil
+fzf.fzf_exec = function(entries, opts)
+    picked = { entries = entries, opts = opts }
+end
+vim.api.nvim_win_set_cursor(source_win, { at('n.Notify("hi")', "Notify") })
+peek.implementation()
+vim.wait(10000, function()
+    return picked ~= nil
+end, 50)
+fzf.fzf_exec = real_exec
+assert(picked and #picked.entries == 2, "two implementations in the picker: " .. vim.inspect(picked))
+local listed = table.concat(picked.entries, "\n")
+assert(listed:find("main.go:%d+:%d+: func %(emailNotifier%) Notify") and listed:find("func (smsNotifier) Notify", 1, true),
+    "entries: " .. listed)
+assert(not peek.float(), "no float for several implementations")
+assert(peek._is_double("/x/mocks/store.go") and peek._is_double("/x/store_mock.go")
+    and peek._is_double("/x/store_test.go") and not peek._is_double("/x/store.go"), "mock detection")
+print("PEEK_IMPLEMENTATION_OK")
 
 -- File ↔ test.
 local go_alt = require("go_alt")
