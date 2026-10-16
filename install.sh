@@ -11,6 +11,7 @@
 #
 # Шаги:
 #   brew    пакеты из Brewfile
+#   privacy статистика Homebrew и телеметрия Go выключаются
 #   anchor  ~/.config/dotfiles → этот репозиторий (через него ссылаются конфиги)
 #   zsh     строка `source …/zsh/zshrc.zsh` в конце ~/.zshrc
 #   tmux    строка `source-file …/tmux/tmux.conf` в ~/.tmux.conf;
@@ -183,6 +184,33 @@ for tool in tmux nvim go gopls dlv fzf fd rg jq tree-sitter delta lazygit difft 
     info "нет команды $tool (поставит brew bundle)"
   }
 done
+
+# ============================================================
+# Телеметрия
+# ============================================================
+
+# Homebrew по умолчанию отправляет статистику установок, Go собирает
+# счётчики использования (режим local — пока только на диск). Обе
+# выключаются; go — из ~, чтобы go.mod рядом не начал скачивание toolchain.
+section "privacy"
+if (( $+commands[brew] )); then
+  if brew analytics state 2>/dev/null | grep -q disabled; then
+    [[ $mode == check ]] && ok "Homebrew: статистика выключена"
+  elif [[ $mode == check ]]; then
+    bad "Homebrew отправляет статистику установок (brew analytics off)"
+  else
+    act "brew analytics off" brew analytics off
+  fi
+fi
+if (( $+commands[go] )); then
+  if [[ $(cd ~ && GOTOOLCHAIN=local go telemetry 2>/dev/null) == off ]]; then
+    [[ $mode == check ]] && ok "Go: телеметрия выключена"
+  elif [[ $mode == check ]]; then
+    bad "Go собирает телеметрию (go telemetry off)"
+  else
+    act "go telemetry off" zsh -c 'cd ~ && GOTOOLCHAIN=local go telemetry off'
+  fi
+fi
 
 # ============================================================
 # Конфиги

@@ -22,10 +22,13 @@ export EDITOR=nvim
 export VISUAL=nvim
 
 # go install → ~/go/bin (GOPATH по умолчанию; без форка `go env` на старте);
-# ~/.local/bin — dev, devlog, projects. GOTOOLCHAIN не задаётся: auto,
-# gopls наследует ту же политику.
+# ~/.local/bin — dev, devlog, projects. Оба — в конце PATH: программа,
+# поставленная через go install, не подменит одноимённую системную или из
+# Homebrew (git, ssh, sudo). GOTOOLCHAIN не задаётся: auto, gopls наследует
+# ту же политику.
+# Унаследованные копии убираются: у typeset -U осталась бы первая, спереди.
 typeset -U path
-path=("$HOME/go/bin" "$HOME/.local/bin" $path)
+path=(${path:#$HOME/(go|.local)/bin} "$HOME/go/bin" "$HOME/.local/bin")
 
 # ============================================================
 # История
