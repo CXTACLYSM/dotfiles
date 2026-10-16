@@ -132,6 +132,8 @@ vim.pack.add({
     "https://github.com/lewis6991/gitsigns.nvim",
     -- Debug Adapter Protocol client; delve is the Go adapter.
     "https://github.com/mfussenegger/nvim-dap",
+    -- Markdown drawn for reading: headings, code blocks, tables, lists.
+    "https://github.com/MeanderingProgrammer/render-markdown.nvim",
 })
 
 
@@ -145,6 +147,11 @@ require("catppuccin").setup({
     term_colors = false,
     no_italic = true,
     auto_integrations = true,
+    -- The compiled theme is cached by this table only, so a newly added
+    -- plugin's colours appear after its integration is named here.
+    integrations = {
+        render_markdown = true,
+    },
 })
 
 vim.cmd.colorscheme("catppuccin-mocha")
@@ -967,6 +974,27 @@ local go_tasks = require("go_tasks")
 go_tasks.setup({
     build_command = "go build ./... && go vet ./...",
     test_flags = { "-count=1" },
+})
+
+
+-- ============================================================
+-- Markdown
+-- ============================================================
+
+-- README, docs and LSP hover drawn for reading (lua/markdown_view.lua);
+-- Space m shows the raw text of the buffer and back.
+local markdown_view = require("markdown_view")
+
+markdown_view.setup()
+
+vim.api.nvim_create_autocmd("FileType", {
+    pattern = "markdown",
+    callback = function(event)
+        map("n", "<leader>m", markdown_view.toggle, {
+            buffer = event.buf,
+            desc = "Markdown drawn / raw",
+        })
+    end,
 })
 
 

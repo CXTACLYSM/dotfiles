@@ -27,6 +27,7 @@ local modules = {
     "go_alt",
     "todo",
     "sql_nav",
+    "markdown_view",
     "peek",
     "breadcrumbs",
     "change_tree.go_index",

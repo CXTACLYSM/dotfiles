@@ -3,8 +3,9 @@
 # Lua-тесты, AST-хелпер, закреплённые плагины и парсеры, полный старт
 # init.lua, gopls на фикстурах (module, standalone, политика toolchain),
 # дерево правок на git-фикстуре, навигация (подсмотр, реализации, строка
-# «где я», свёртки), SQL-запросы и TODO, переименование. Плагины, парсеры и хелпер ставит
-# install.sh; здесь они только проверяются.
+# «где я», свёртки), SQL-запросы и TODO, переименование, оформление
+# markdown. Плагины, парсеры и хелпер ставит install.sh; здесь они только
+# проверяются.
 #
 #   nvim/verify.sh             проверить этот каталог как nvim-конфиг
 #   NVIM_CONFIG_DIR=... verify.sh   другой каталог (его имя должно быть nvim)
@@ -106,6 +107,12 @@ env "${nvim_env[@]}" XDG_CONFIG_HOME="$config_home" \
   nvim --headless -i NONE -u "$config_dir/init.lua" \
     --cmd "lua vim.g.fzf_lua_server='verify'" \
     -l "$tests/full_init_smoke.lua"
+
+step "Markdown"
+env "${nvim_env[@]}" XDG_CONFIG_HOME="$config_home" \
+  nvim --headless -i NONE -u "$config_dir/init.lua" \
+    --cmd "lua vim.g.fzf_lua_server='verify'" \
+    -l "$tests/markdown_smoke.lua"
 
 step "LSP integration fixtures"
 module="$work/nvim-go-module"
