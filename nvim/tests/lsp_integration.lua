@@ -54,12 +54,13 @@ end
 
 local workspace_symbols = vim.fn.maparg("<leader>sS", "n", false, true)
 assert(
-    workspace_symbols.rhs:find("lsp_live_workspace_symbols", 1, true),
+    type(workspace_symbols.callback) == "function"
+        and workspace_symbols.desc:find("Live workspace symbols", 1, true),
     "workspace symbol mapping is not live"
 )
 assert(
-    type(require("fzf-lua").lsp_live_workspace_symbols) == "function",
-    "fzf-lua live workspace symbol provider is unavailable"
+    type(require("fzf-lua").fzf_live) == "function",
+    "fzf-lua live picker is unavailable"
 )
 assert(vim.bo.tagfunc == "v:lua.vim.lsp.tagfunc", "Ctrl-] LSP tagfunc is not active")
 assert(vim.fn.maparg("<C-o>", "n") == "", "Ctrl-o must retain native jumplist behavior")

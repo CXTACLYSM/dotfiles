@@ -4,6 +4,8 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -233,5 +235,50 @@ const (
 	}
 	if b.Name != "B" || b.Qualified != "B" {
 		t.Fatalf("implicit const identity was not exact: %#v", b)
+	}
+}
+
+func TestDeclarationsByKind(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "sample.go"), []byte(fixture), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	extra := "package sample\n\ntype (\n\tID = string\n\tPage[T any] struct{ Items []T }\n)\n\nfunc New() *Memory { return nil }\n\nfunc (p Page[T]) Len() int { return 0 }\n\nvar _ = New\n\nfunc broken( {\n"
+	if err := os.MkdirAll(filepath.Join(root, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "sub", "extra.go"), []byte(extra), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := listDeclarations(root, []string{"sample.go", "sub/extra.go", "missing.go"})
+	var listed []string
+	for _, decl := range got {
+		item := decl.Kind + " " + decl.Name
+		if decl.Receiver != "" {
+			item = decl.Kind + " (" + decl.Receiver + ") " + decl.Name
+		}
+		listed = append(listed, decl.Path+":"+strconv.Itoa(decl.Line)+" "+item)
+	}
+	want := []string{
+		"sample.go:6 const SchemaBootstrap",
+		"sample.go:7 const SchemaTaskState",
+		"sample.go:11 var ErrNotFound",
+		"sample.go:12 var ErrInvalidState",
+		"sample.go:15 struct State",
+		"sample.go:21 interface Store",
+		"sample.go:25 struct Memory",
+		"sample.go:27 method (*Memory) Save",
+		"sub/extra.go:4 type ID",
+		"sub/extra.go:5 struct Page",
+		"sub/extra.go:8 func New",
+		"sub/extra.go:10 method (Page[T]) Len",
+		// A file with a syntax error gives what parsed.
+		"sub/extra.go:14 func broken",
+	}
+	if strings.Join(listed, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("declarations:\n%s\nwant:\n%s", strings.Join(listed, "\n"), strings.Join(want, "\n"))
+	}
+	if got[0].Col != 2 {
+		t.Fatalf("column of SchemaBootstrap = %d", got[0].Col)
 	}
 }

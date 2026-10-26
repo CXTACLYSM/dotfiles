@@ -14,9 +14,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 )
 
 const protocolVersion = 3
@@ -28,6 +30,8 @@ type Request struct {
 	Content     string `json:"content,omitempty"`
 	CurrentFile string `json:"current_file,omitempty"`
 	CurrentLine int    `json:"current_line,omitempty"`
+	// Files relative to Root for the "declarations" mode.
+	Paths []string `json:"paths,omitempty"`
 }
 
 type Envelope struct {
@@ -36,6 +40,19 @@ type Envelope struct {
 	Error    string     `json:"error,omitempty"`
 	Snapshot *Snapshot  `json:"snapshot,omitempty"`
 	File     *FileIndex `json:"file,omitempty"`
+
+	Declarations []Declaration `json:"declarations,omitempty"`
+}
+
+// Declaration is a top-level name of a file, for exploring a project by
+// kind: struct, interface, type, func, method, const or var.
+type Declaration struct {
+	Path     string `json:"path"`
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Receiver string `json:"receiver,omitempty"`
+	Line     int    `json:"line"`
+	Col      int    `json:"col"`
 }
 
 type Snapshot struct {
@@ -196,6 +213,8 @@ func handle(req Request) Envelope {
 			return Envelope{Version: protocolVersion, OK: false, Error: err.Error()}
 		}
 		return Envelope{Version: protocolVersion, OK: true, Snapshot: snapshot}
+	case "declarations":
+		return Envelope{Version: protocolVersion, OK: true, Declarations: listDeclarations(root, req.Paths)}
 	case "inspect_file":
 		file, err := inspectFile(root, req.Path, req.Content)
 		if err != nil {
@@ -968,4 +987,83 @@ func inspectFile(root, path, content string) (*FileIndex, error) {
 		return nil, err
 	}
 	return parsed.index, nil
+}
+
+// listDeclarations parses the files in parallel and returns their top-level
+// declarations in the order of paths, each file in source order. A file
+// that cannot be read is skipped; one with syntax errors gives what parsed.
+func listDeclarations(root string, paths []string) []Declaration {
+	results := make([][]Declaration, len(paths))
+	jobs := make(chan int)
+	var wg sync.WaitGroup
+	for range runtime.GOMAXPROCS(0) {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for index := range jobs {
+				results[index] = fileDeclarations(root, paths[index])
+			}
+		}()
+	}
+	for index := range paths {
+		jobs <- index
+	}
+	close(jobs)
+	wg.Wait()
+
+	var all []Declaration
+	for _, declarations := range results {
+		all = append(all, declarations...)
+	}
+	return all
+}
+
+func fileDeclarations(root, rel string) []Declaration {
+	source, err := os.ReadFile(filepath.Join(root, filepath.FromSlash(rel)))
+	if err != nil {
+		return nil
+	}
+	fset := token.NewFileSet()
+	file, _ := parser.ParseFile(fset, rel, source, parser.SkipObjectResolution)
+	if file == nil {
+		return nil
+	}
+	var out []Declaration
+	add := func(kind string, name *ast.Ident, receiver string) {
+		if name == nil || name.Name == "_" {
+			return
+		}
+		pos := fset.Position(name.Pos())
+		out = append(out, Declaration{Path: rel, Kind: kind, Name: name.Name, Receiver: receiver, Line: pos.Line, Col: pos.Column})
+	}
+	for _, decl := range file.Decls {
+		switch d := decl.(type) {
+		case *ast.FuncDecl:
+			if receiver := receiverText(fset, d.Recv); receiver != "" {
+				add("method", d.Name, receiver)
+			} else {
+				add("func", d.Name, "")
+			}
+		case *ast.GenDecl:
+			for _, spec := range d.Specs {
+				switch s := spec.(type) {
+				case *ast.TypeSpec:
+					kind := "type"
+					if !s.Assign.IsValid() {
+						kind = typeKind(s.Type)
+					}
+					add(kind, s.Name, "")
+				case *ast.ValueSpec:
+					kind := "var"
+					if d.Tok == token.CONST {
+						kind = "const"
+					}
+					for _, name := range s.Names {
+						add(kind, name, "")
+					}
+				}
+			}
+		}
+	}
+	return out
 }

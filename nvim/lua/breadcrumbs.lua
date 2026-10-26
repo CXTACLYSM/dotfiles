@@ -7,7 +7,8 @@
 -- Built from the Tree-sitter tree the highlighter already keeps, so moving
 -- the cursor sends no LSP request. Buffers without an active highlighter
 -- (big files, other languages) show the path only. Floats, quickfix, help
--- and other non-file windows get no bar.
+-- and other non-file windows get no bar. A pinned file shows its number
+-- first (◆2), from opts.pin.
 
 local M = {}
 
@@ -15,6 +16,8 @@ M.opts = {
     separator = " › ",
     -- Directories kept in front of the file name; deeper paths start with …
     max_dirs = 3,
+    -- function(path) → the pin number of a file, or nil.
+    pin = nil,
 }
 
 local expression = "%{%v:lua.require'breadcrumbs'.render()%}"
@@ -144,7 +147,12 @@ function M.render()
     local bufnr = vim.api.nvim_win_get_buf(win)
     local cursor = vim.api.nvim_win_get_cursor(win)
 
-    local out = { "%#BreadcrumbPath#", escape(M.path(bufnr)) }
+    local out = {}
+    local pin = M.opts.pin and M.opts.pin(vim.api.nvim_buf_get_name(bufnr))
+    if pin then
+        table.insert(out, "%#BreadcrumbPin#◆" .. pin .. " ")
+    end
+    vim.list_extend(out, { "%#BreadcrumbPath#", escape(M.path(bufnr)) })
     if vim.bo[bufnr].modified then
         table.insert(out, "%#BreadcrumbModified# ●")
     end
@@ -179,6 +187,7 @@ function M.setup(user_opts)
         BreadcrumbSeparator = "NonText",
         BreadcrumbSymbol = "Function",
         BreadcrumbModified = "DiagnosticWarn",
+        BreadcrumbPin = "Special",
     }) do
         vim.api.nvim_set_hl(0, group, { link = link, default = true })
     end

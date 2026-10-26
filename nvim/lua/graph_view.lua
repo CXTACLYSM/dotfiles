@@ -1,7 +1,8 @@
 -- Shared floating view for the return graph and the call graph:
 -- a tree on the left, a live source preview on the right, like the fzf-lua
--- `grr` picker. Moving the cursor in the tree scrolls the preview to the
--- selected node; Enter (and other per-entry keys) jump into the code.
+-- `grr` picker and as it on the whole screen. Moving the cursor in the tree
+-- scrolls the preview to the selected node; Enter (and other per-entry
+-- keys) jump into the code.
 --
 -- The preview is a scratch buffer filled with the target file's lines and
 -- Tree-sitter highlighting, so previewing never loads files into the
@@ -128,8 +129,10 @@ local function layout(lines, footer, title, opts)
     end
     natural = math.max(natural, vim.fn.strdisplaywidth(footer) + 2, vim.fn.strdisplaywidth(title) + 2) + 2
 
-    local total = vim.o.columns - 4
-    local height = math.max(math.min(#lines, vim.o.lines - 6), 3)
+    -- The whole screen, as the pickers: the tree takes its natural width,
+    -- the preview the rest of it.
+    local total = vim.o.columns - 2
+    local height = math.max(vim.o.lines - vim.o.cmdheight - 2, 3)
 
     -- The preview needs its own border column pair plus a usable body.
     local preferred_preview = math.max(opts.min_preview_width, math.floor(total * opts.preview_ratio))
@@ -142,8 +145,8 @@ local function layout(lines, footer, title, opts)
         tree_width = math.min(natural, total)
     end
 
-    local row = math.max(math.floor((vim.o.lines - height) / 2) - 1, 0)
-    local col = math.floor((vim.o.columns - (tree_width + (with_preview and preview_width + 2 or 0))) / 2)
+    local row = 0
+    local col = math.floor((vim.o.columns - (tree_width + 2 + (with_preview and preview_width + 2 or 0))) / 2)
 
     return {
         height = height,

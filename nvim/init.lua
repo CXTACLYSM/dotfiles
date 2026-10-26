@@ -356,8 +356,69 @@ map("n", "gI", peek.implementation, {
     desc = "Peek implementation",
 })
 
--- Window bar: file › type › method › closure around the cursor.
-require("breadcrumbs").setup()
+-- grp between the .proto contracts and Go: on an rpc its handler (without
+-- the generated Unimplemented… and mocks), on a message / field / enum the
+-- generated code; in Go, from a handler, a message, a getter or a client
+-- call back to the .proto (lua/go_proto.lua).
+map("n", "grp", function()
+    require("go_proto").jump(project_root)
+end, {
+    desc = "Between the .proto and Go",
+})
+
+-- K on a variable, parameter or field of a struct type: the hover with that
+-- struct below it and every project type its fields name, transitively, so
+-- the fields are at hand without going to the definition (lua/go_hover.lua).
+-- Replaces the native K of gopls buffers; K again focuses the float.
+local go_hover = require("go_hover")
+
+vim.api.nvim_create_autocmd("LspAttach", {
+    callback = function(event)
+        local client = vim.lsp.get_client_by_id(event.data.client_id)
+        if client and client.name == "gopls" then
+            map("n", "K", go_hover.hover, {
+                buffer = event.buf,
+                desc = "Hover with the fields of struct types",
+            })
+        end
+    end,
+})
+
+-- Pinned files of the task (lua/pins.lua): Space p pins the current file
+-- or unpins it, Alt-1…9 open them, Space P lists them (Ctrl-x unpins,
+-- Alt-↑ / Alt-↓ reorder). They are kept per project across restarts and
+-- head the Space f tree with the recent files.
+local pins = require("pins")
+
+pins.setup()
+
+map("n", "<leader>p", function()
+    pins.toggle(project_root)
+end, {
+    desc = "Pin / unpin the current file",
+})
+
+map("n", "<leader>P", function()
+    pins.pick(project_root)
+end, {
+    desc = "Pinned files",
+})
+
+for number = 1, pins.max do
+    map("n", "<M-" .. number .. ">", function()
+        pins.jump(project_root, number)
+    end, {
+        desc = "Pinned file " .. number,
+    })
+end
+
+-- Window bar: ◆2 for a pinned file, file › type › method › closure around
+-- the cursor.
+require("breadcrumbs").setup({
+    pin = function(path)
+        return pins.number(project_root, path)
+    end,
+})
 
 -- Space ga: file ↔ its test; a missing test file starts with the package
 -- clause and the testing import.
@@ -539,10 +600,12 @@ local symbol_icons = {
 }
 
 fzf.setup({
+    -- Every picker takes the whole screen (F2 shrinks it to 90% and back);
+    -- the short lists without a preview (categories, kinds) stay small.
     -- Preview to the right of the list while the picker is wider than 80
-    -- columns (nvim from about 90); only in a very narrow window does it
-    -- move below the list.
+    -- columns; only in a very narrow window does it move below the list.
     winopts = {
+        fullscreen = true,
         width = 0.9,
         preview = {
             flip_columns = 80,
@@ -558,57 +621,46 @@ fzf.setup({
     },
 })
 
+-- Files, grep and workspace symbols by category: all, rpc (contracts and
+-- generated code), tests, internal and each of its folders. Every picker
+-- opens on `all`; Alt-c inside lists the categories and keeps the typed
+-- query (lua/categories.lua).
+local categories = require("categories")
+
 -- Always execute a fresh file scan rooted at the directory where `nvim .`
--- started. This avoids stale/resumed picker state and cwd drift.
+-- started. This avoids stale/resumed picker state and cwd drift. The files
+-- open full screen as a tree of folders (← → to close / open, typing
+-- searches every file, lua/file_tree.lua).
 map("n", "<leader>f", function()
-    fzf.files({
-        cwd = project_root,
-        resume = false,
-        hidden = true,
-        no_ignore = false,
-    })
+    categories.files(project_root)
 end, {
-    desc = "Find project files",
+    desc = "Find project files by category",
 })
 
 -- Same search, but include files ignored by .gitignore.
 map("n", "<leader>F", function()
-    fzf.files({
-        cwd = project_root,
-        resume = false,
-        hidden = true,
-        no_ignore = true,
-    })
+    categories.files(project_root, { no_ignore = true })
 end, {
-    desc = "Find all project files",
+    desc = "Find all project files by category",
 })
 
 map("n", "<leader>/", function()
-    fzf.live_grep({
-        cwd = project_root,
-        resume = false,
-    })
+    categories.live_grep(project_root)
 end, {
-    desc = "Grep project",
+    desc = "Grep project by category",
 })
 
 -- The word under the cursor (whole word) or the selection, across the project.
 map("n", "<leader>*", function()
-    fzf.grep_cword({
-        cwd = project_root,
-        resume = false,
-    })
+    categories.grep(project_root, fzf.utils.rg_escape_cword(vim.fn.expand("<cword>")), true)
 end, {
-    desc = "Grep word under cursor",
+    desc = "Grep word under cursor by category",
 })
 
 map("x", "<leader>*", function()
-    fzf.grep_visual({
-        cwd = project_root,
-        resume = false,
-    })
+    categories.grep(project_root, fzf.utils.get_visual_selection(), false)
 end, {
-    desc = "Grep selection",
+    desc = "Grep selection by category",
 })
 
 -- Files of the current package: the directory of the current file.
@@ -660,8 +712,12 @@ map("n", "<leader>ss", "<cmd>FzfLua lsp_document_symbols<CR>", {
     desc = "Document symbols",
 })
 
-map("n", "<leader>sS", "<cmd>FzfLua lsp_live_workspace_symbols<CR>", {
-    desc = "Live workspace symbols",
+-- gopls answers at most 100 symbols; for internal the query is narrowed on
+-- the server so generated code does not take them all.
+map("n", "<leader>sS", function()
+    categories.symbols(project_root)
+end, {
+    desc = "Live workspace symbols by category",
 })
 
 -- Override Neovim's native `grr` references list with fzf-lua.

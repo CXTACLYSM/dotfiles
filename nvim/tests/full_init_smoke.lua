@@ -1,6 +1,6 @@
 -- The whole init.lua after startup: gopls settings, commands, mappings,
--- diagnostics, Tree-sitter parsers, portable symbol icons and the change
--- tree defaults.
+-- diagnostics, Tree-sitter parsers, portable symbol icons, full-screen
+-- pickers and graph views, and the change tree defaults.
 local cfg = vim.lsp.config.gopls
 assert(cfg.cmd_env.GOTOOLCHAIN == nil, "gopls must inherit the shell GOTOOLCHAIN policy")
 assert(cfg.cmd_env.GOPROXY == nil, "gopls must inherit the shell GOPROXY")
@@ -33,6 +33,7 @@ for _, lhs in ipairs({
     "gre", "grc", "gro", "<leader>ct", "<leader>cT",
     "gp", "gP", "gI", "<leader>ga", "<leader>*", "<leader>.",
     "<leader>st", "]t", "[t", "<leader>sQ",
+    "<leader>f", "<leader>F", "<leader>/", "<leader>sS", "grp", "<leader>p", "<leader>P", "<M-1>",
 }) do
     assert(has_map("n", lhs), "missing normal mapping " .. lhs)
 end
@@ -78,6 +79,21 @@ for kind, icon in pairs(symbols.symbol_icons) do
         assert(code < 0xE000 or code > 0xF8FF, "private-use glyph for " .. kind)
     end
 end
+
+assert(require("fzf-lua.config").globals.winopts.fullscreen == true, "pickers take the whole screen")
+local tree_win, preview_win = require("graph_view").open({
+    title = " graph ",
+    lines = { "root", "  child" },
+    entries = { {}, {} },
+})
+for _, win in ipairs({ tree_win, preview_win }) do
+    assert(win, "graph view window")
+    local frame = vim.api.nvim_win_get_config(win)
+    assert(frame.height == vim.o.lines - vim.o.cmdheight - 2 and frame.row == 0,
+        "graph view on the whole screen: " .. vim.inspect(frame))
+end
+vim.api.nvim_win_close(preview_win, true)
+vim.api.nvim_win_close(tree_win, true)
 
 local change_tree = require("change_tree")
 assert(change_tree.opts.auto == false, "build after save is off by default")

@@ -281,6 +281,24 @@ function M.inspect_file(root, path, callback)
     end)
 end
 
+-- Top-level declarations of `paths` (relative to `root`), parsed from disk:
+-- callback({ { path, kind, name, receiver?, line, col } }, err). Kinds:
+-- struct, interface, type, func, method, const, var.
+function M.declarations(root, paths, callback)
+    request({
+        mode = "declarations",
+        root = root,
+        paths = paths,
+    }, function(payload, err)
+        if err then
+            callback(nil, err)
+            return
+        end
+
+        callback(payload.declarations or {}, nil)
+    end)
+end
+
 local function position_inside(symbol, line, col)
     if line < symbol.start_line or line > symbol.end_line then
         return false
