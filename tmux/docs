@@ -7,6 +7,11 @@
 #   док      README и остальные .md проекта (docs/, adr/ …), README первым;
 #   api      контракты: .proto, OpenAPI / Swagger (yaml, json); сторонние
 #            proto (vendor*, third_party, google/…) не показываются;
+#   rpc      каждый rpc контрактов: в превью его объявление, сообщение
+#            запроса и готовая команда grpcurl с JSON-заготовкой
+#            (nvim/tools/grpc_request.lua — те же заготовки, что grq в
+#            nvim); Enter набирает команду в окно rpc сессии и закрывает
+#            попап, Ctrl-y копирует её в буфер обмена;
 #   пакет    Go-пакеты модуля с первой фразой doc-комментария, в превью —
 #            `go doc` пакета;
 #   клавиши  шпаргалка этого окружения (README репозитория настроек).
@@ -19,7 +24,10 @@
 #
 #   docs [каталог]                 интерактивно
 #   docs --list [каталог]          только список (для проверки)
-#   docs --preview <вид> <путь>    превью одного пункта
+#   docs --preview <вид> <путь> [<сервис> <rpc>]   превью одного пункта
+#   docs --open <вид> <путь> [<сервис> <rpc>]      Enter по пункту
+#   docs --copy rpc <путь> <сервис> <rpc>          команда в буфер обмена
+#                                  (DOCS_CLIPBOARD, по умолчанию pbcopy)
 
 emulate -L zsh
 setopt extended_glob pipe_fail no_unset
@@ -29,6 +37,8 @@ dotfiles=${self:h:h}
 
 rst=$'\e[0m'; bold=$'\e[1m'; dim=$'\e[38;5;244m'
 blue=$'\e[38;5;111m'; green=$'\e[38;5;150m'; yellow=$'\e[38;5;221m'; mauve=$'\e[38;5;183m'
+sky=$'\e[38;5;117m'
+request_tool=$dotfiles/nvim/tools/grpc_request.lua
 
 # Корень проекта для каталога $1: git, иначе ближайший go.mod выше.
 project_root() {
@@ -67,6 +77,16 @@ entries() {
     -g '*openapi*.{json,yaml,yml}' 2>/dev/null | sort)"})
   for f in $api; do
     print -r -- "${green}api${rst}"$'\t'"$f"$'\t'api$'\t'"$f"
+  done
+
+  # Каждый rpc контрактов: «rpc  Сервис/Метод  файл», цель — файл, сервис, rpc.
+  local svc_rpc
+  for f in ${(M)api:#*.proto}; do
+    for svc_rpc in ${(f)"$(awk '
+      /^[ \t]*service[ \t]+[A-Za-z_][A-Za-z0-9_]*/ { s = $2; sub(/[^A-Za-z0-9_].*/, "", s) }
+      /^[ \t]*rpc[ \t]+[A-Za-z_][A-Za-z0-9_]*/ { r = $2; sub(/[^A-Za-z0-9_].*/, "", r); if (s != "") print s "\t" r }' $f)"}; do
+      print -r -- "${sky}rpc${rst}"$'\t'"${svc_rpc%%$'\t'*}/${svc_rpc#*$'\t'} ${dim}$f${rst}"$'\t'rpc$'\t'"$f"$'\t'"${svc_rpc%%$'\t'*}"$'\t'"${svc_rpc#*$'\t'}"
+    done
   done
 
   if [[ -f go.mod ]]; then
@@ -137,28 +157,48 @@ godoc_colors() {
     { print }'
 }
 
+# Команда grpcurl для rpc $3 сервиса $2 из файла $1 (относительно корня,
+# текущего каталога) — заготовку строит Lua-модуль редактора.
+request_command() {
+  nvim --clean -l $request_tool command $PWD $1 $2 $3
+}
+
 preview() {
   local kind=$1 target=$2
   case $kind in
     md) markdown < $target | head -400 ;;
     api) if [[ $target == *.proto ]]; then proto < $target | head -400; else head -400 $target; fi ;;
+    rpc) nvim --clean -l $request_tool preview $PWD $target $3 $4 2>&1 | proto | head -400 ;;
     pkg) package_doc $target | godoc_colors | head -400 ;;
   esac
 }
 
-# Enter: целиком в nvim, только чтение; q — назад к списку.
+# Enter: целиком в nvim, только чтение; q — назад к списку. Для rpc —
+# команда набирается в окно rpc сессии (backend/rpc в монорепо, как
+# tests у Space gt), окно показывается; попап к этому моменту закрыт.
 open_doc() {
   local kind=$1 target=$2
   local -a quit=(-c 'nnoremap <buffer> q <cmd>qa!<CR>')
   case $kind in
     pkg) package_doc $target all | nvim -R $quit -c 'set syntax=go' -c "file go\\ doc\\ ${target// /\\ }" - ;;
+    rpc)
+      local line session window name
+      line=$(request_command $target $3 $4) || return 1
+      session=$(tmux display -p '#S') window=$(tmux display -p '#W') name=rpc
+      [[ $window == */* ]] && name=${window%/*}/rpc
+      if ! tmux list-windows -t "=$session" -F '#W' | grep -qx -- $name; then
+        tmux new-window -d -t "=$session:" -n $name -c $PWD
+      fi
+      tmux send-keys -t "=$session:$name" -l -- $line
+      tmux select-window -t "=$session:$name" ;;
     *) nvim -R $quit -- $target ;;
   esac
 }
 
 case ${1-} in
-  --preview) preview $2 $3; exit ;;
-  --open) open_doc $2 $3; exit ;;
+  --preview) preview $2 $3 $4 $5; exit ;;
+  --open) open_doc $2 $3 $4 $5; exit ;;
+  --copy) request_command $3 $4 $5 | ${=DOCS_CLIPBOARD:-pbcopy}; exit ;;
   --list) list_only=1; shift ;;
 esac
 
@@ -170,9 +210,12 @@ if (( ${+list_only} )); then
   exit
 fi
 
+# Enter по rpc заменяет fzf командой (become): попап закрывается, окно rpc
+# остаётся на экране; остальное открывается внутри попапа (execute).
 entries </dev/null | fzf --ansi --delimiter=$'\t' --with-nth=1,2 --tiebreak=index --layout=reverse \
   --prompt="${root:t} › " \
-  --header='Enter — читать целиком (q — назад) · Esc — закрыть' \
-  --preview="${(q)self} --preview {3} {4}" \
+  --header='Enter — читать целиком (q — назад), у rpc — набрать запрос в окно rpc · Ctrl-y — скопировать запрос · Esc — закрыть' \
+  --preview="${(q)self} --preview {3} {4} {5} {6}" \
   --preview-window='right,60%,border-left,<60(down,55%,border-top)' \
-  --bind="enter:execute(${(q)self} --open {3} {4})"
+  --bind="enter:transform:if [ {3} = rpc ]; then echo 'become(${(q)self} --open {3} {4} {5} {6})'; else echo 'execute(${(q)self} --open {3} {4})'; fi" \
+  --bind="ctrl-y:execute-silent(${(q)self} --copy {3} {4} {5} {6})"

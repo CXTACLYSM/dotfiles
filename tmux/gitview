@@ -1,0 +1,219 @@
+#!/bin/zsh
+# Изменения и история git — prefix G во всплывающем окне tmux на весь экран,
+# только просмотр: stage, commit и прочие действия остаются в CLI и lazygit
+# (prefix g). Слева список, справа превью через delta или difftastic.
+#
+# Режимы (Alt-c, по кругу):
+#   changes   рабочее дерево к HEAD; две колонки статуса как у
+#             `git status --short`: индекс и рабочее дерево (M изменён,
+#             A добавлен, D удалён, R переименован, ?? неотслеживаемый)
+#   staged    только индекс — то, что уйдёт в коммит
+#   log       коммиты текущей ветки
+#   branch    коммиты ветки, которых нет в origin/HEAD (будущий PR);
+#             без origin — относительно main или master
+# Alt-k — рендерер по кругу: delta, difftastic, git (как | в lazygit).
+# Enter — файл или коммит целиком в пейджере (delta: n / N — по файлам,
+# q — назад к списку), Ctrl-d / Ctrl-u — листать превью, Esc — закрыть.
+# Каталог — репозиторий текущей панели, worktree учитывается. Если
+# изменений нет, окно открывается сразу на log.
+#
+#   gitview [каталог]                 интерактивно
+#   gitview --list РЕЖИМ              строки списка (в каталоге репозитория)
+#   gitview --preview ВИД ЦЕЛЬ        превью одной строки
+#   gitview --open ВИД ЦЕЛЬ           целиком в пейджере (GITVIEW_PAGER, less -R)
+#   gitview --cycle mode|renderer     следующий режим или рендерер (действия fzf)
+# Режим и рендерер живут в промпте fzf ("changes · delta › ") и читаются
+# подкомандами из $FZF_PROMPT.
+
+emulate -L zsh
+setopt extended_glob
+path=(/opt/homebrew/bin /usr/local/bin $path)   # popup живёт в окружении сервера tmux
+typeset -U path
+
+self=${0:A}
+tab=$'\t'
+rst=$'\e[0m'; dim=$'\e[38;5;244m'
+yellow=$'\e[38;5;221m'; green=$'\e[38;5;150m'; red=$'\e[38;5;210m'
+
+modes=(changes staged log branch)
+renderers=(delta difft git)
+
+prompt_of() { print -r -- "$1 · $2 › " }
+
+# Режим и рендерер из промпта fzf.
+state() {
+  mode=${FZF_PROMPT%% *}
+  renderer=${${FZF_PROMPT#* · }%% *}
+  (( ${modes[(Ie)$mode]} )) || mode=changes
+  (( ${renderers[(Ie)$renderer]} )) || renderer=delta
+}
+
+# База режима branch: origin/HEAD, иначе main или master.
+base_ref() {
+  local ref
+  for ref in origin/HEAD main master; do
+    if git rev-parse -q --verify "$ref^{commit}" >/dev/null 2>&1; then print -r -- $ref; return 0; fi
+  done
+  return 1
+}
+
+# Строки списка: "вид<TAB>как показать<TAB>цель" (file — путь, commit — sha,
+# none — пояснение вместо пустого списка).
+none() { print -r -- "none$tab${dim}$1${rst}$tab-" }
+
+paint_status() {
+  local x=$1 y=$2 out=
+  if [[ $x$y == '??' ]]; then print -rn -- "${dim}??${rst}"; return; fi
+  case $x in
+    ' ') out+=' ' ;;
+    D) out+="${red}D${rst}" ;;
+    *) out+="${green}${x}${rst}" ;;
+  esac
+  case $y in
+    ' ') out+=' ' ;;
+    D) out+="${red}D${rst}" ;;
+    *) out+="${yellow}${y}${rst}" ;;
+  esac
+  print -rn -- $out
+}
+
+list() {
+  local mode=$1 line x y p sha subject meta range base
+  local -a lines
+  case $mode in
+    changes)
+      lines=(${(f)"$(git status --porcelain=v1 --untracked-files=all 2>/dev/null)"})
+      (( $#lines )) || { none 'нет изменений: рабочее дерево совпадает с HEAD'; return }
+      for line in $lines; do
+        x=$line[1] y=$line[2] p=${line[4,-1]}
+        [[ $p == *' -> '* ]] && p=${p##* -> }
+        print -r -- "file$tab$(paint_status $x $y)  ${line[4,-1]}$tab$p"
+      done ;;
+    staged)
+      lines=(${(f)"$(git diff --cached --name-status 2>/dev/null)"})
+      (( $#lines )) || { none 'индекс пуст: нечего коммитить'; return }
+      for line in $lines; do
+        x=${line%%$tab*} p=${line##*$tab}
+        if [[ $x == R* || $x == C* ]]; then
+          print -r -- "file$tab${green}${x[1]}${rst}   ${${line#*$tab}%%$tab*} → $p$tab$p"
+        else
+          print -r -- "file$tab$(paint_status $x ' ')  $p$tab$p"
+        fi
+      done ;;
+    log|branch)
+      if [[ $mode == branch ]]; then
+        base=$(base_ref) || { none 'нет origin/HEAD, main или master — нечего сравнивать'; return }
+        range="$base..HEAD"
+      fi
+      lines=(${(f)"$(git log --format="%h$tab%s$tab%an, %ar" -n 500 ${range:+$range} 2>/dev/null)"})
+      if (( ! $#lines )); then
+        if [[ $mode == branch ]]; then none "нет коммитов сверх $base"; else none 'нет коммитов'; fi
+        return
+      fi
+      for line in $lines; do
+        sha=${line%%$tab*}; meta=${line##*$tab}; subject=${${line#*$tab}%$tab*}
+        print -r -- "commit$tab${yellow}$sha${rst} $subject  ${dim}$meta${rst}$tab$sha"
+      done ;;
+  esac
+}
+
+# Команда git для строки списка: $cmd — до флагов цвета, $paths — после
+# них; неотслеживаемый файл сравнивается с /dev/null.
+diff_command() {
+  local kind=$1 target=$2
+  paths=()
+  if [[ $kind == commit ]]; then
+    cmd=(git show $target)
+  elif [[ $mode == staged ]]; then
+    cmd=(git diff --cached) paths=(-- $target)
+  elif git ls-files --error-unmatch -- $target >/dev/null 2>&1; then
+    cmd=(git diff HEAD) paths=(-- $target)
+  else
+    cmd=(git diff --no-index) paths=(/dev/null $target)
+  fi
+}
+
+# Diff или коммит выбранным рендерером шириной $1 в stdout, без пейджера.
+render() {
+  local width=$1 kind=$2 target=$3
+  local -a cmd paths
+  diff_command $kind $target
+  case $renderer in
+    delta)
+      "${cmd[@]}" --color=never "${paths[@]}" 2>&1 | delta --paging=never --width=$width ;;
+    difft)
+      export DFT_COLOR=always DFT_WIDTH=$width DFT_BACKGROUND=dark DFT_DISPLAY=${DFT_DISPLAY:-inline}
+      if (( ${cmd[(I)--no-index]} )); then
+        difft /dev/null $target
+      elif [[ $kind == commit ]]; then
+        git -c diff.external=difft show --ext-diff $target
+      else
+        git -c diff.external=difft "${cmd[@]:1}" "${paths[@]}"
+      fi ;;
+    *)
+      "${cmd[@]}" --color=always "${paths[@]}" 2>&1 ;;
+  esac
+}
+
+preview() {
+  state
+  local kind=$1 target=$2
+  if [[ $kind == none ]]; then print -r -- "${dim}нечего показывать${rst}"; return 0; fi
+  render ${FZF_PREVIEW_COLUMNS:-${COLUMNS:-120}} $kind $target
+  return 0
+}
+
+open_full() {
+  state
+  local kind=$1 target=$2 pager=${GITVIEW_PAGER:-less -R} width=${COLUMNS:-$(tput cols 2>/dev/null || print 120)}
+  [[ $kind == none ]] && return 0
+  if [[ $renderer == delta ]]; then
+    local -a cmd paths
+    diff_command $kind $target
+    "${cmd[@]}" --color=never "${paths[@]}" 2>&1 | delta --paging=always --pager=$pager --width=$width
+  else
+    DFT_DISPLAY=side-by-side render $width $kind $target | ${=pager}
+  fi
+  return 0
+}
+
+cycle() {
+  state
+  local what=$1 next
+  local -a items
+  if [[ $what == mode ]]; then items=($modes); next=$mode; else items=($renderers); next=$renderer; fi
+  next=${items[$(( ${items[(Ie)$next]} % $#items + 1 ))]}
+  if [[ $what == mode ]]; then
+    print -r -- "change-prompt($(prompt_of $next $renderer))+reload(${(q)self} --list $next)+first"
+  else
+    print -r -- "change-prompt($(prompt_of $mode $next))+refresh-preview"
+  fi
+}
+
+case ${1-} in
+  --list)    list ${2:-changes}; exit 0 ;;
+  --preview) preview $2 $3; exit 0 ;;
+  --open)    open_full $2 $3; exit 0 ;;
+  --cycle)   cycle ${2:-mode}; exit 0 ;;
+esac
+
+root=$(git -C ${1:-$PWD} rev-parse --show-toplevel 2>/dev/null) || {
+  print -u2 -r -- "gitview: ${${1:-$PWD}/#$HOME/~} — не git-репозиторий"
+  sleep 2
+  exit 1
+}
+cd $root || exit 1
+
+mode=changes renderer=delta
+[[ -z $(git status --porcelain --untracked-files=all 2>/dev/null) ]] && mode=log
+
+list $mode | fzf --ansi --delimiter=$tab --with-nth=2 --layout=reverse --no-sort --tiebreak=index \
+  --prompt="$(prompt_of $mode $renderer)" \
+  --header='Alt-c — режим · Alt-k — рендерер · Enter — целиком (q — назад) · Esc — закрыть' \
+  --preview="${(q)self} --preview {1} {3}" \
+  --preview-window='right,62%,border-left,<100(down,60%,border-top)' \
+  --bind="alt-c:transform:${(q)self} --cycle mode" \
+  --bind="alt-k:transform:${(q)self} --cycle renderer" \
+  --bind="enter:execute(${(q)self} --open {1} {3})" \
+  --bind='ctrl-d:preview-half-page-down,ctrl-u:preview-half-page-up' >/dev/null
+exit 0

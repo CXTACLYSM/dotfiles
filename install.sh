@@ -7,7 +7,7 @@
 #   ./install.sh --dry-run      показать, что будет сделано, ничего не меняя
 #   ./install.sh --check        только проверить состояние
 #   ./install.sh --no-brew      без brew bundle (пакеты уже стоят)
-#   ./install.sh --skip-verify  без прогона nvim/verify.sh (1–2 минуты)
+#   ./install.sh --skip-verify  без прогона nvim/verify.sh и tmux/verify.sh (1–2 минуты)
 #
 # Шаги:
 #   brew    пакеты из Brewfile
@@ -15,7 +15,7 @@
 #   anchor  ~/.config/dotfiles → этот репозиторий (через него ссылаются конфиги)
 #   zsh     строка `source …/zsh/zshrc.zsh` в конце ~/.zshrc
 #   tmux    строка `source-file …/tmux/tmux.conf` в ~/.tmux.conf;
-#           dev, devlog, projects → ~/.local/bin
+#           dev, devlog, projects → ~/.local/bin; tmux/verify.sh
 #   git     include.path в ~/.gitconfig; конфиг lazygit
 #   iterm   профиль Go Backend (dynamic profile)
 #   nvim    ~/.config/nvim → nvim/; плагины и парсеры по lock-файлу;
@@ -175,7 +175,7 @@ fi
 # zsh запоминает содержимое PATH при первом обращении к $commands: без
 # rehash только что поставленные brew bundle программы не видны.
 rehash
-for tool in tmux nvim go gopls dlv fzf fd rg jq tree-sitter delta lazygit difft git; do
+for tool in tmux nvim go gopls dlv fzf fd rg jq tree-sitter delta lazygit difft git grpcurl xh; do
   (( $+commands[$tool] )) || {
     if [[ $mode == install ]]; then
       (( brew_step )) && die "нет команды $tool после brew bundle — проверь вывод brew выше"
@@ -232,6 +232,16 @@ ensure_line $HOME/.tmux.conf "source-file ~/.config/dotfiles/tmux/tmux.conf"
 for tool in dev devlog projects; do
   link $repo/tmux/$tool $HOME/.local/bin/$tool
 done
+if [[ $mode != check ]]; then
+  if (( verify_step )); then
+    tmux_verify_log=$HOME/.local/state/dotfiles/verify-tmux.log
+    [[ $mode == dry-run ]] || mkdir -p ${tmux_verify_log:h}
+    act "проверки tmux (tmux/verify.sh, лог: $(short $tmux_verify_log))" \
+      zsh -c "${(q)repo}/tmux/verify.sh > ${(q)tmux_verify_log} 2>&1"
+  else
+    info "tmux/verify.sh пропущен (--skip-verify)"
+  fi
+fi
 
 section "git"
 include='~/.config/dotfiles/git/gitconfig'

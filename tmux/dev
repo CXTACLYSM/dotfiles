@@ -14,6 +14,17 @@
 #                          порты, Go toolchain, GOPROXY/приватные модули
 #   dev -d [...]           только создать сессию и напечатать её имя
 #                          (так её открывает переключатель проектов prefix f)
+#   dev -w НАБОР           открыть все проекты набора ~/.config/dev/sets/НАБОР
+#                          (строка — каталог и опции dev: «~/w/shop -b TASK-1»,
+#                          «~/w/mono backend frontend»); dev -w — список наборов
+#   dev -W НАБОР           записать открытые dev-сессии в набор
+#   dev -s                 снимок сессий tmux (окна, панели, каталоги,
+#                          раскладки) в ~/.local/state/dev/sessions; хуки
+#                          tmux делают это сами при каждом изменении
+#   dev -r [СЕССИЯ…]       после перезагрузки: поднять сессии снимка, которых
+#                          нет — dev-сессии через их раскладку плюс окна,
+#                          добавленные руками; prefix f показывает их как ○
+#                          (до следующего запуска сервера tmux)
 #
 # Раскладка — ~/.config/dev/<проект>.zsh ($DEV_LAYOUTS), обычный zsh:
 #   win ИМЯ [-x] [-c КАТАЛОГ] [КОМАНДА]   новое окно
@@ -37,6 +48,10 @@ typeset -U path
 
 self=${0:A}
 layouts=${DEV_LAYOUTS:-$HOME/.config/dev}
+sets_dir=${DEV_SETS:-$HOME/.config/dev/sets}
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/dev
+snapshot_file=$state_dir/sessions
+tab=$'\t'
 
 die() { print -u2 -r -- "dev: $*"; exit 1 }
 
@@ -305,16 +320,235 @@ auto_layout() {
 }
 
 # ============================================================
+# Снимок сессий (dev -s, dev -r)
+# ============================================================
+
+# Поля строки снимка (табуляция; пустые поля сохраняются) — в $f.
+fields() { f=("${(@ps:\t:)1}") }
+
+# Снимок сессий в $snapshot_file (TSV, атомарно):
+#   server   pid и время старта сервера
+#   session  имя  @dev_root  @dev_project  @dev_worktree  @dev_subs
+#            last_attached  активное окно  live|kept
+#   window   сессия  индекс  имя  раскладка  активно
+#   pane     сессия  окно  индекс  каталог  программа  активна
+# Без сервера файл не трогается — так последний снимок переживает
+# выключение, когда хуки session-closed срабатывают уже без сервера.
+# Первый снимок нового сервера (другой pid) переносит сессии
+# прежнего как kept: их поднимает dev -r, prefix f показывает их как ○;
+# при следующем старте сервера невосстановленные kept выпадают. При том
+# же сервере закрытая сессия из снимка исчезает, kept переносятся дальше.
+snapshot() {
+  local -a sessions f
+  sessions=(${(f)"$(tmux list-sessions -F $'#{session_name}\t#{@dev_root}\t#{@dev_project}\t#{@dev_worktree}\t#{@dev_subs}\t#{session_last_attached}' 2>/dev/null)"})
+  (( $#sessions )) || return 1
+  local start=$(tmux display-message -p '#{pid}:#{start_time}' 2>/dev/null)
+  local tmp=$snapshot_file.$$ line name active old_start carry=0 new_server=0
+  local -A live
+  mkdir -p $state_dir || return 1
+  print -r -- "server$tab$start" > $tmp
+  for line in $sessions; do
+    name=${line%%$tab*}
+    live[$name]=1
+    active=$(tmux display-message -p -t "=$name:" '#{window_name}' 2>/dev/null)
+    print -r -- "session$tab$line$tab$active${tab}live" >> $tmp
+    tmux list-windows -t "=$name" -F "window$tab$name"$'\t#{window_index}\t#{window_name}\t#{window_layout}\t#{window_active}' >> $tmp
+    tmux list-panes -s -t "=$name" -F "pane$tab$name"$'\t#{window_index}\t#{pane_index}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_active}' >> $tmp
+  done
+  if [[ -r $snapshot_file ]]; then
+    old_start=$(awk -F'\t' '$1 == "server" { print $2; exit }' $snapshot_file)
+    [[ $old_start != $start ]] && new_server=1
+    while IFS= read -r line; do
+      fields $line
+      case $f[1] in
+        session)
+          carry=0
+          (( ${+live[$f[2]]} )) && continue
+          if (( new_server )); then
+            [[ $f[9] == live ]] && carry=1
+          else
+            [[ $f[9] == kept ]] && carry=1
+          fi
+          if (( carry )); then
+            f[9]=kept
+            print -r -- "${(pj:\t:)f}" >> $tmp
+          fi ;;
+        window|pane) (( carry )) && print -r -- $line >> $tmp ;;
+      esac
+    done < $snapshot_file
+  fi
+  mv -f $tmp $snapshot_file
+}
+
+# Окна сессии $1 из снимка, которых нет на сервере в сессии $2 (по имени):
+# создаются с панелями в их каталогах и раскладкой; где работал nvim,
+# он запускается снова.
+restore_windows() {
+  local saved=$1 live=$2 line index wname cwd cmd
+  local -a f present=(${(f)"$(tmux list-windows -t "=$live" -F '#{window_name}' 2>/dev/null)"})
+  local -A layouts_of names_of
+  local -a order
+  while IFS= read -r line; do
+    fields $line
+    [[ $f[1] == window && $f[2] == $saved ]] || continue
+    (( ${present[(Ie)$f[4]]} )) && continue
+    order+=$f[3]
+    names_of[$f[3]]=$f[4]
+    layouts_of[$f[3]]=$f[5]
+  done < $snapshot_file
+  for index in $order; do
+    wname=$names_of[$index]
+    local -a pane_ids=() nvim_ids=()
+    local id
+    while IFS= read -r line; do
+      fields $line
+      [[ $f[1] == pane && $f[2] == $saved && $f[3] == $index ]] || continue
+      cwd=$f[5] cmd=$f[6]
+      [[ -d $cwd ]] || cwd=$HOME
+      if (( ! $#pane_ids )); then
+        id=$(tmux new-window -d -P -F '#{pane_id}' -t "=$live:" -n $wname -c $cwd) || break
+      else
+        id=$(tmux split-window -d -P -F '#{pane_id}' -t $pane_ids[-1] -c $cwd) || break
+      fi
+      pane_ids+=$id
+      [[ $cmd == nvim ]] && nvim_ids+=$id
+    done < $snapshot_file
+    (( $#pane_ids )) || continue
+    tmux select-layout -t $pane_ids[1] "$layouts_of[$index]" 2>/dev/null
+    for id in $nvim_ids; do tmux send-keys -t $id 'nvim .' Enter; done
+  done
+}
+
+# Сессии снимка, которых нет на сервере (все или названные): dev-сессия
+# поднимается через `dev -d` в своём корне — раскладка и набранные команды
+# как обычно, — затем добавляются окна сверх раскладки; сессия, созданная
+# не через dev, — как была. Снаружи tmux в конце — attach к последней из
+# посещённых.
+restore() {
+  local -a wanted=("$@") restored skipped
+  [[ -r $snapshot_file ]] || die "нет снимка сессий ($snapshot_file): его пишут хуки tmux и dev -s"
+  local line name root created
+  local -a f names
+  local -A root_of subs_of active_of last_of
+  while IFS= read -r line; do
+    fields $line
+    [[ $f[1] == session ]] || continue
+    name=$f[2]
+    (( $#wanted )) && (( ! ${wanted[(Ie)$name]} )) && continue
+    names+=$name
+    root_of[$name]=$f[3] subs_of[$name]=$f[6] last_of[$name]=$f[7] active_of[$name]=$f[8]
+  done < $snapshot_file
+  (( $#names )) || die "в снимке нет сессий${wanted:+ $wanted}"
+
+  local best= best_time=-1
+  for name in $names; do
+    if tmux has-session -t "=$name" 2>/dev/null; then
+      skipped+="$name (уже открыта)"
+      continue
+    fi
+    root=$root_of[$name]
+    if [[ -n $root ]]; then
+      if [[ ! -d $root ]]; then skipped+="$name (нет каталога ${root/#$HOME/~})"; continue; fi
+      created=$(cd $root && $self -d ${=subs_of[$name]}) || { skipped+="$name (dev не создал сессию)"; continue }
+    else
+      created=$name
+      tmux has-session -t "=$created" 2>/dev/null || {
+        local first_cwd=$(awk -F'\t' -v s="$name" '$1 == "pane" && $2 == s { print $5; exit }' $snapshot_file)
+        [[ -d $first_cwd ]] || first_cwd=$HOME
+        tmux new-session -d -s $created -n __restore -c $first_cwd || { skipped+="$name (не создать сессию)"; continue }
+      }
+    fi
+    restore_windows $name $created
+    [[ -z $root ]] && tmux kill-window -t "=$created:__restore" 2>/dev/null
+    [[ -n $active_of[$name] ]] && tmux select-window -t "=$created:$active_of[$name]" 2>/dev/null
+    restored+=$created
+    if (( ${last_of[$name]:-0} > best_time )); then best=$created best_time=${last_of[$name]:-0}; fi
+  done
+
+  (( quiet )) || {
+    (( $#restored )) && print -r -- "восстановлено: ${(j: :)restored}"
+    (( $#skipped )) && print -r -- "пропущено: ${(j:; :)skipped}"
+  }
+  (( $#restored )) || return 0
+  (( detach )) && return 0
+  [[ -n $TMUX ]] && return 0
+  exec tmux attach-session -t "=$best"
+}
+
+# ============================================================
+# Наборы проектов (dev -w, dev -W)
+# ============================================================
+
+# Открыть каждый проект набора через `dev -d` и перейти в первый.
+open_set() {
+  local file=$sets_dir/$1 line dir created
+  local -a words names
+  [[ -r $file ]] || die "нет набора $1 (${file/#$HOME/~}); dev -W $1 запишет открытые dev-сессии"
+  while IFS= read -r line; do
+    line=${line%%\#*}
+    words=(${(z)line})
+    (( $#words )) || continue
+    dir=${~words[1]}
+    [[ -d $dir ]] || { print -u2 -r -- "dev: нет каталога ${dir/#$HOME/~}"; continue }
+    created=$(cd $dir && $self -d "${(@)words[2,-1]}") || continue
+    names+=$created
+  done < $file
+  (( $#names )) || die "набор $1: ни один проект не открыт"
+  if (( detach )); then print -rl -- $names; exit 0; fi
+  session=$names[1]
+  attach
+}
+
+# Открытые dev-сессии как строки набора: worktree задачи — основной
+# репозиторий и `-b ветка`, подпроекты монорепо — следом за каталогом.
+write_set() {
+  local line name root wt subs main rel branch
+  local -a f lines
+  for line in ${(f)"$(tmux list-sessions -F $'#{session_name}\t#{@dev_root}\t#{@dev_worktree}\t#{@dev_subs}' 2>/dev/null)"}; do
+    fields $line
+    name=$f[1] root=$f[2] wt=$f[3] subs=$f[4]
+    [[ -n $root ]] || continue
+    if [[ -n $wt ]]; then
+      main=${$(git -C $root rev-parse --path-format=absolute --git-common-dir 2>/dev/null):h}
+      rel=${root#$wt}
+      branch=$(git -C $root branch --show-current 2>/dev/null)
+      [[ -n $main && -n $branch ]] && lines+="${main/#$HOME/~}$rel -b $branch"
+    else
+      lines+="${root/#$HOME/~}${subs:+ $subs}"
+    fi
+  done
+  (( $#lines )) || die 'нет открытых dev-сессий'
+  mkdir -p $sets_dir || die "не создать $sets_dir"
+  print -rl -- "# dev -w $1: каталог проекта и опции dev (-b ветка, подпроекты)" $lines > $sets_dir/$1
+  print -r -- "набор $1 — ${sets_dir/#$HOME/~}/$1:"
+  print -rl -- "  "$^lines
+}
+
+list_sets() {
+  local file
+  local -a files=($sets_dir/*(N.))
+  (( $#files )) || { print -r -- "наборов нет: dev -W ИМЯ запишет открытые dev-сессии в ${sets_dir/#$HOME/~}/ИМЯ"; return }
+  for file in $files; do
+    print -r -- "${file:t}:"
+    grep -v '^[[:space:]]*#' $file | sed 's/^/  /'
+  done
+}
+
+# ============================================================
 # Режимы
 # ============================================================
 
-detach=0 quiet=0 mode=open branch=
+detach=0 quiet=0 mode=open branch= set_name=
 while [[ ${1:-} == -* ]]; do
   case $1 in
     -d) detach=1 ;;
     -q) quiet=1 ;;
     -k) mode=kill ;;
     -c) mode=check ;;
+    -s) mode=save ;;
+    -r) mode=restore ;;
+    -w) mode=set; if [[ -n ${2:-} && $2 != -* ]]; then set_name=$2; shift; fi ;;
+    -W) [[ -n ${2:-} ]] || die '-W: нужно имя набора'; mode=write_set; set_name=$2; shift ;;
     -b) [[ -n ${2:-} ]] || die '-b: нужно имя ветки'; branch=$2; shift ;;
     -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' $self; exit 0 ;;
     *)  die "неизвестный флаг $1 (dev -h)" ;;
@@ -327,6 +561,33 @@ attach() {
   [[ -n $TMUX ]] && exec tmux switch-client -t "=$session"
   exec tmux attach-session -t "=$session"
 }
+
+if [[ $mode == save ]]; then
+  # Из хука (-q) — после паузы: серия событий даёт один итог, а при
+  # остановке сервера сессий уже нет и снимок остаётся прежним.
+  (( quiet )) && sleep 1
+  if snapshot; then
+    (( quiet )) || print -r -- "снимок сессий: ${snapshot_file/#$HOME/~}"
+  else
+    (( quiet )) || die 'нет сессий tmux — снимок не изменён'
+  fi
+  exit 0
+fi
+
+if [[ $mode == restore ]]; then
+  restore "$@"
+  exit 0
+fi
+
+if [[ $mode == set ]]; then
+  if [[ -n $set_name ]]; then open_set $set_name; else list_sets; fi
+  exit 0
+fi
+
+if [[ $mode == write_set ]]; then
+  write_set $set_name
+  exit 0
+fi
 
 if [[ $mode == check ]]; then
   # dev -c [-q] [сессия]: корень — из опции сессии, которую поставил dev.
@@ -424,6 +685,7 @@ fi
 tmux set -t "=$session:" @dev_root $root
 tmux set -t "=$session:" @dev_project $project
 [[ -n $wt ]] && tmux set -t "=$session:" @dev_worktree $wt
+(( $# )) && tmux set -t "=$session:" @dev_subs "$*"
 tmux select-window -t $first
 tmux run-shell -b "${(q)self} -c -q ${(q)session}"   # проверка окружения в фоне
 attach
