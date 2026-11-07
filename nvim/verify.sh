@@ -3,10 +3,11 @@
 # Lua-тесты, AST-хелпер, закреплённые плагины и парсеры, полный старт
 # init.lua, gopls на фикстурах (module, standalone, политика toolchain),
 # дерево правок на git-фикстуре, навигация (подсмотр, реализации, строка
-# «где я», свёртки, поля структур в K, переход proto ↔ Go), SQL-запросы
-# и TODO, категории поиска, дерево файлов, закреплённые файлы,
-# переименование, оформление markdown. Плагины, парсеры и хелпер ставит
-# install.sh; здесь они только проверяются.
+# «где я», свёртки, поля структур в K, переход proto ↔ Go, запрос grpcurl
+# для rpc), SQL-запросы и TODO, категории поиска и файлы того же домена,
+# дерево файлов, закреплённые файлы, переименование, оформление markdown.
+# Плагины, парсеры и хелпер ставит install.sh; здесь они только
+# проверяются.
 #
 #   nvim/verify.sh             проверить этот каталог как nvim-конфиг
 #   NVIM_CONFIG_DIR=... verify.sh   другой каталог (его имя должно быть nvim)
@@ -23,7 +24,7 @@ step() {
   printf '\n== %s ==\n' "$1"
 }
 
-for command in nvim go gopls git jq rg fd; do
+for command in nvim go gopls git jq rg fd grpcurl; do
   command -v "$command" >/dev/null 2>&1 || {
     echo "$command is required" >&2
     exit 1
@@ -61,7 +62,8 @@ env "${nvim_env[@]}" NVIM_CONFIG_DIR="$config_dir" \
 
 step "Pure Lua regressions"
 for name in pairs_smoke go_lsp_smoke go_returns_smoke go_tasks_smoke \
-  completion_retrigger_smoke big_file_smoke go_debug_smoke change_tree_render
+  completion_retrigger_smoke big_file_smoke go_debug_smoke change_tree_render \
+  repos_grep_smoke json_log_smoke proto_diff_smoke rpc_owner_smoke err_flow_smoke
 do
   env "${nvim_env[@]}" NVIM_CONFIG_LUA="$config_dir/lua" \
     nvim --clean --headless -i NONE -l "$tests/$name.lua"
@@ -472,6 +474,30 @@ module="$(cd "$module" && pwd -P)"
       "$module/main.go" -l "$tests/nav_smoke.lua"
 )
 
+step "Implement an interface"
+cat > "$module/impl.go" <<'EOF_IMPL'
+package main
+
+type fileStore struct{}
+EOF_IMPL
+(
+  cd "$module"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    GOCACHE="$work/go-cache" \
+    GOPATH="$work/go-path" \
+    GOMODCACHE="$work/go-mod-cache" \
+    GOPROXY=off \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/impl.go" -l "$tests/go_impl_smoke.lua"
+)
+
+step "Coverage"
+env "${nvim_env[@]}" NVIM_CONFIG_LUA="$config_dir/lua" \
+  GOCACHE="$work/go-cache" GOPATH="$work/go-path" GOMODCACHE="$work/go-mod-cache" GOPROXY=off GOFLAGS= \
+  nvim --clean --headless -i NONE -l "$tests/go_cover_smoke.lua"
+
 step "Hover"
 module="$work/hover"
 mkdir -p "$module/model" "$module/app"
@@ -789,6 +815,123 @@ func Create(c orderv1.OrderServiceClient) error {
 	return err
 }
 EOF_PROTO_CLIENT
+# For grq: a richer contract with imports, the gRPC port in .env and a
+# server that registers reflection.
+mkdir -p "$module/api/billing/v1" "$module/api/common/v1" "$module/api/google/api" "$module/cmd/server"
+echo 'GRPC_PORT=8082' > "$module/.env"
+cat > "$module/cmd/server/main.go" <<'EOF_PROTO_SERVER'
+package main
+
+import (
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/reflection"
+)
+
+func main() {
+	server := grpc.NewServer()
+	reflection.Register(server)
+}
+EOF_PROTO_SERVER
+cat > "$module/api/common/v1/common.proto" <<'EOF_COMMON_PROTO'
+syntax = "proto3";
+
+package common.v1;
+
+// Address is where an invoice goes.
+message Address {
+  string city = 1;
+  string street = 2;
+}
+EOF_COMMON_PROTO
+cat > "$module/api/google/api/annotations.proto" <<'EOF_ANNOTATIONS_PROTO'
+syntax = "proto3";
+
+package google.api;
+
+import "google/protobuf/descriptor.proto";
+
+extend google.protobuf.MethodOptions {
+  HttpRule http = 72295728;
+}
+
+message HttpRule {
+  string post = 1;
+  string body = 2;
+}
+EOF_ANNOTATIONS_PROTO
+cat > "$module/api/billing/v1/billing.proto" <<'EOF_BILLING_PROTO'
+syntax = "proto3";
+
+package billing.v1;
+
+import "google/api/annotations.proto";
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+import "common/v1/common.proto";
+
+option go_package = "example.com/shop/pkg/api/billing/v1;billingv1";
+
+/* BillingService issues invoices:
+   create, list, ping. */
+service BillingService {
+  // CreateInvoice issues an invoice.
+  rpc CreateInvoice(CreateInvoiceRequest) returns (CreateInvoiceResponse) {
+    option (google.api.http) = {
+      post: "/v1/invoices"
+      body: "*"
+    };
+  }
+  rpc ListInvoices(ListInvoicesRequest)
+      returns (stream Invoice);
+  rpc Ping(google.protobuf.Empty) returns (google.protobuf.Empty);
+}
+
+message CreateInvoiceRequest {
+  int64 user_id = 1;
+  repeated Item items = 2;
+  Status status = 3;
+  map<string, int32> counts = 4;
+  oneof payment {
+    Card card = 5;
+    string voucher = 6;
+  }
+  google.protobuf.Timestamp deliver_at = 7;
+  common.v1.Address address = 8;
+  Invoice parent = 9;
+  bytes blob = 10 [deprecated = true, json_name = "blob"];
+  bool rush = 11;
+  reserved 12, 13;
+  reserved "old_name";
+}
+
+message Item {
+  message Money {
+    int64 units = 1;
+    string currency = 2;
+  }
+  string sku = 1;
+  int32 count = 2;
+  Money price = 3;
+}
+
+enum Status {
+  option allow_alias = true;
+  STATUS_UNSPECIFIED = 0;
+  STATUS_ACTIVE = 1;
+  STATUS_LIVE = 1;
+}
+
+message Card { string number = 1; }
+
+message ListInvoicesRequest { int32 page_size = 1; }
+
+message Invoice {
+  int64 id = 1;
+  Invoice parent = 2;
+}
+
+message CreateInvoiceResponse { Invoice invoice = 1; }
+EOF_BILLING_PROTO
 module="$(cd "$module" && pwd -P)"
 (
   cd "$module"
@@ -801,6 +944,144 @@ module="$(cd "$module" && pwd -P)"
     nvim --headless -i NONE -u "$config_dir/init.lua" \
       --cmd "lua vim.g.fzf_lua_server='verify'" \
       "$module/internal/app/order/handler.go" -l "$tests/go_proto_smoke.lua"
+)
+(
+  cd "$module"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    GOCACHE="$work/go-cache" \
+    GOPATH="$work/go-path" \
+    GOMODCACHE="$work/go-mod-cache" \
+    GOPROXY=off \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/internal/app/order/handler.go" -l "$tests/grpc_request_smoke.lua"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    GOCACHE="$work/go-cache" \
+    GOPATH="$work/go-path" \
+    GOMODCACHE="$work/go-mod-cache" \
+    GOPROXY=off \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/internal/app/order/handler.go" -l "$tests/rpc_owner_lsp_smoke.lua"
+)
+
+step "Error flow"
+module="$work/errflow"
+mkdir -p "$module/status" "$module/codes" "$module/repo" "$module/service" "$module/handler"
+cat > "$module/go.mod" <<'EOF_ERR_MOD'
+module example.com/errflow
+
+go 1.23
+EOF_ERR_MOD
+cat > "$module/codes/codes.go" <<'EOF_ERR_CODES'
+package codes
+
+type Code int
+
+const (
+	NotFound Code = 5
+	Internal Code = 13
+)
+EOF_ERR_CODES
+cat > "$module/status/status.go" <<'EOF_ERR_STATUS'
+package status
+
+import (
+	"errors"
+
+	"example.com/errflow/codes"
+)
+
+func Error(c codes.Code, msg string) error { return errors.New(msg) }
+
+func Errorf(c codes.Code, format string, args ...any) error { return errors.New(format) }
+EOF_ERR_STATUS
+cat > "$module/repo/repo.go" <<'EOF_ERR_REPO'
+package repo
+
+import (
+	"errors"
+	"fmt"
+)
+
+var ErrNotFound = errors.New("not found")
+
+type Repo struct{}
+
+func (r *Repo) Get(id string) error {
+	return fmt.Errorf("get %s: %w", id, ErrNotFound)
+}
+EOF_ERR_REPO
+cat > "$module/service/service.go" <<'EOF_ERR_SERVICE'
+package service
+
+import (
+	"fmt"
+
+	"example.com/errflow/repo"
+)
+
+type Service struct{ Repo *repo.Repo }
+
+func (s *Service) Place(id string) error {
+	if err := s.Repo.Get(id); err != nil {
+		return fmt.Errorf("place order: %w", err)
+	}
+	return nil
+}
+EOF_ERR_SERVICE
+cat > "$module/handler/handler.go" <<'EOF_ERR_HANDLER'
+package handler
+
+import (
+	"errors"
+
+	"example.com/errflow/codes"
+	"example.com/errflow/repo"
+	"example.com/errflow/service"
+	"example.com/errflow/status"
+)
+
+type Handler struct{ Service *service.Service }
+
+func (h *Handler) PlaceOrder(id string) error {
+	if err := h.Service.Place(id); err != nil {
+		if errors.Is(err, repo.ErrNotFound) {
+			return status.Error(codes.NotFound, "order")
+		}
+		return status.Errorf(codes.Internal, "place: %v", err)
+	}
+	return nil
+}
+EOF_ERR_HANDLER
+cat > "$module/main.go" <<'EOF_ERR_MAIN'
+package main
+
+import (
+	"example.com/errflow/handler"
+	"example.com/errflow/repo"
+	"example.com/errflow/service"
+)
+
+func main() {
+	h := &handler.Handler{Service: &service.Service{Repo: &repo.Repo{}}}
+	_ = h.PlaceOrder("1")
+}
+EOF_ERR_MAIN
+module="$(cd "$module" && pwd -P)"
+(
+  cd "$module"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    GOCACHE="$work/go-cache" \
+    GOPATH="$work/go-path" \
+    GOMODCACHE="$work/go-mod-cache" \
+    GOPROXY=off \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/repo/repo.go" -l "$tests/err_flow_lsp_smoke.lua"
 )
 
 step "SQL and TODO"
@@ -922,6 +1203,11 @@ module="$(cd "$module" && pwd -P)"
     nvim --headless -i NONE -u "$config_dir/init.lua" \
       --cmd "lua vim.g.fzf_lua_server='verify'" \
       "$module/internal/order/service.go" -l "$tests/categories_smoke.lua"
+  env "${nvim_env[@]}" \
+    XDG_CONFIG_HOME="$config_home" \
+    nvim --headless -i NONE -u "$config_dir/init.lua" \
+      --cmd "lua vim.g.fzf_lua_server='verify'" \
+      "$module/internal/order/service.go" -l "$tests/related_smoke.lua"
 )
 
 step "File tree"

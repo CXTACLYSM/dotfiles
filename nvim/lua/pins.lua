@@ -115,11 +115,14 @@ end
 function M.lines(root)
     local utils = require("fzf-lua").utils
     local lines = {}
+    local file_tree = require("file_tree")
+    local paint = file_tree.painters()
     for index, rel in ipairs(M.list(root)) do
         local dir, name = rel:match("^(.*/)([^/]*)$")
-        table.insert(lines, string.format("%s  %s  %s%s%s",
-            utils.ansi_codes.yellow(tostring(index)), name or rel, utils.ansi_codes.grey(dir or ""),
-            utils.nbsp, rel))
+        local glyph, hl = file_tree.icon(rel)
+        table.insert(lines, string.format("%s  %s%s  %s%s%s",
+            utils.ansi_codes.yellow(tostring(index)), glyph and (paint[hl](glyph) .. " ") or "", name or rel,
+            utils.ansi_codes.grey(dir or ""), utils.nbsp, rel))
     end
     return lines
 end

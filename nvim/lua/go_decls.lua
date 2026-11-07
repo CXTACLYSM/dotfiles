@@ -61,6 +61,21 @@ function M.collect(root, paths, done)
     end)
 end
 
+-- The declarations right away, waiting up to `timeout_ms` for the files
+-- not parsed yet; nil when the helper is missing or too slow (the preview
+-- of a folder in Space f).
+function M.collect_sync(root, paths, timeout_ms)
+    local result, done = nil, false
+    M.collect(root, paths, function(list)
+        result = list
+        done = true
+    end)
+    vim.wait(timeout_ms or 500, function()
+        return done
+    end, 10)
+    return result
+end
+
 -- Number of declarations of each kind.
 function M.counts(list)
     local counts = {}

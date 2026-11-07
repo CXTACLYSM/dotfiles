@@ -39,6 +39,14 @@ opt.swapfile = false
 opt.updatetime = 250
 opt.timeoutlen = 1000
 
+-- One rounded border for every floating window: documentation, peeks,
+-- the completion popup, diagnostics.
+opt.winborder = "rounded"
+
+-- The file is named in the window bar (breadcrumbs) and the tab line
+-- (bufferline); the status line keeps the flags and the position only.
+opt.statusline = " %h%w%m%r%=%-14.(%l,%c%V%) %P "
+
 -- Native completion works better with this.
 opt.completeopt = { "menuone", "noselect", "popup" }
 
@@ -103,7 +111,14 @@ vim.diagnostic.config({
         prefix = "●",
     },
     virtual_lines = false,
-    signs = true,
+    signs = {
+        text = {
+            [vim.diagnostic.severity.ERROR] = "",
+            [vim.diagnostic.severity.WARN] = "",
+            [vim.diagnostic.severity.INFO] = "",
+            [vim.diagnostic.severity.HINT] = "",
+        },
+    },
     underline = true,
     severity_sort = true,
     update_in_insert = false,
@@ -134,6 +149,24 @@ vim.pack.add({
     "https://github.com/mfussenegger/nvim-dap",
     -- Markdown drawn for reading: headings, code blocks, tables, lists.
     "https://github.com/MeanderingProgrammer/render-markdown.nvim",
+    -- File icons by name and extension (Nerd Font glyphs): the file tree,
+    -- Space f and the other fzf-lua pickers draw them.
+    "https://github.com/nvim-tree/nvim-web-devicons",
+    -- File tree in a panel on the left (Space e); plenary and nui are its
+    -- libraries.
+    "https://github.com/nvim-lua/plenary.nvim",
+    "https://github.com/MunifTanjim/nui.nvim",
+    "https://github.com/nvim-neo-tree/neo-tree.nvim",
+    -- The keys that continue a prefix (Space, g, ], …) shown after a pause.
+    "https://github.com/folke/which-key.nvim",
+    -- s + two characters + a label jumps anywhere on the screen.
+    "https://github.com/folke/flash.nvim",
+    -- ys / cs / ds: add, change and delete the quotes or brackets around.
+    "https://github.com/kylechui/nvim-surround",
+    -- Formatters by file type, run on save (gofumpt for Go).
+    "https://github.com/stevearc/conform.nvim",
+    -- Open buffers as tabs at the top, with icons and diagnostics.
+    "https://github.com/akinsho/bufferline.nvim",
 })
 
 
@@ -151,10 +184,216 @@ require("catppuccin").setup({
     -- plugin's colours appear after its integration is named here.
     integrations = {
         render_markdown = true,
+        neotree = true,
+        which_key = true,
+        nvim_web_devicons = true,
     },
 })
 
 vim.cmd.colorscheme("catppuccin-mocha")
+
+-- File icons: a glyph by name or extension, a plain one for the rest.
+require("nvim-web-devicons").setup({
+    default = true,
+})
+
+
+-- ============================================================
+-- File panel (neo-tree)
+-- ============================================================
+
+-- Space e opens the panel on the left on the current file and closes it;
+-- it follows the open file. The keys repeat the Space f tree: ← → close
+-- and open the folder, Enter opens the file; . sets the root to the folder
+-- under the cursor and Backspace goes back up. Dotfiles are shown,
+-- ignored files are hidden (H toggles).
+require("neo-tree").setup({
+    close_if_last_window = true,
+    popup_border_style = "rounded",
+    enable_git_status = true,
+    enable_diagnostics = false,
+    sort_case_insensitive = true,
+    default_component_configs = {
+        indent = {
+            with_expanders = true,
+            expander_collapsed = "▸",
+            expander_expanded = "▾",
+        },
+        git_status = {
+            symbols = {
+                added = "A",
+                modified = "M",
+                deleted = "D",
+                renamed = "R",
+                untracked = "?",
+                ignored = "",
+                unstaged = "",
+                staged = "",
+                conflict = "!",
+            },
+        },
+    },
+    window = {
+        position = "left",
+        width = 36,
+        mappings = {
+            -- Space stays the leader inside the panel too.
+            ["<space>"] = "none",
+            ["<Right>"] = "open",
+            ["<Left>"] = "close_node",
+            ["l"] = "open",
+            ["h"] = "close_node",
+            ["<CR>"] = "open",
+            ["s"] = "open_vsplit",
+            ["S"] = "open_split",
+            ["."] = "set_root",
+            ["<BS>"] = "navigate_up",
+            ["H"] = "toggle_hidden",
+            ["R"] = "refresh",
+            ["a"] = "add",
+            ["d"] = "delete",
+            ["r"] = "rename",
+            ["y"] = "copy_to_clipboard",
+            ["x"] = "cut_to_clipboard",
+            ["p"] = "paste_from_clipboard",
+            ["q"] = "close_window",
+            ["?"] = "show_help",
+        },
+    },
+    filesystem = {
+        follow_current_file = {
+            enabled = true,
+            leave_dirs_open = true,
+        },
+        use_libuv_file_watcher = true,
+        filtered_items = {
+            visible = false,
+            hide_dotfiles = false,
+            hide_gitignored = true,
+            hide_by_name = { ".git", ".DS_Store" },
+        },
+    },
+})
+
+map("n", "<leader>e", "<cmd>Neotree toggle reveal left<CR>", {
+    desc = "File panel",
+})
+
+
+-- ============================================================
+-- Tabs of open buffers (bufferline)
+-- ============================================================
+
+-- The open files as tabs at the top, with their icons, a dot when not
+-- saved and the count of errors; the panel pushes them right. ]b / [b
+-- go to the next and previous tab, Space x closes the buffer, Space X
+-- the others.
+require("bufferline").setup({
+    options = {
+        mode = "buffers",
+        diagnostics = "nvim_lsp",
+        diagnostics_indicator = function(count, level)
+            return (level:match("error") and " " or " ") .. count
+        end,
+        show_buffer_close_icons = false,
+        show_close_icon = false,
+        always_show_bufferline = false,
+        separator_style = "thin",
+        offsets = {
+            { filetype = "neo-tree", text = "", separator = true },
+        },
+    },
+    highlights = require("catppuccin.special.bufferline").get_theme(),
+})
+
+map("n", "]b", "<cmd>BufferLineCycleNext<CR>", { desc = "Next tab" })
+map("n", "[b", "<cmd>BufferLineCyclePrev<CR>", { desc = "Previous tab" })
+map("n", "<leader>x", function()
+    local buffer = vim.api.nvim_get_current_buf()
+    vim.cmd.bprevious()
+    pcall(vim.api.nvim_buf_delete, buffer, { force = false })
+end, { desc = "Close the buffer" })
+map("n", "<leader>X", "<cmd>BufferLineCloseOthers<CR>", { desc = "Close the other buffers" })
+
+
+-- ============================================================
+-- Keys after a prefix (which-key)
+-- ============================================================
+
+local which_key = require("which-key")
+
+which_key.setup({
+    preset = "helix",
+    delay = 400,
+})
+
+-- ============================================================
+-- Jumps (flash) and surroundings (nvim-surround)
+-- ============================================================
+
+-- s, then two characters of the target, then the label shown next to it:
+-- the cursor lands there (also as a motion: ds + target deletes up to
+-- it). S in normal mode picks a Tree-sitter node around the cursor by its
+-- label; in Visual S stays nvim-surround's. f / t show labels when the
+-- character repeats. r in an operator (yr …) acts on a far place without
+-- moving.
+local flash = require("flash")
+
+flash.setup({
+    modes = {
+        search = { enabled = false },
+        char = { jump_labels = true },
+    },
+})
+
+map({ "n", "x", "o" }, "s", flash.jump, { desc = "Jump (flash)" })
+map("n", "S", flash.treesitter, { desc = "Select a Tree-sitter node (flash)" })
+map("o", "r", flash.remote, { desc = "Remote operator (flash)" })
+map({ "o", "x" }, "R", flash.treesitter_search, { desc = "Tree-sitter search (flash)" })
+
+-- ysiw" wraps the word in quotes, cs"' changes them, ds" deletes them,
+-- yss) the line; in Visual S" wraps the selection.
+require("nvim-surround").setup({})
+
+
+-- ============================================================
+-- Formatting on save (conform)
+-- ============================================================
+
+-- Go is written by gofumpt on every save (it is gofmt with stricter
+-- rules, the same gopls uses for Space gf); :FormatOnSave turns the
+-- save step off and on for this session, Space gf formats by hand. Other
+-- file types are left as they are.
+local conform = require("conform")
+
+conform.setup({
+    formatters_by_ft = {
+        go = { "gofumpt" },
+    },
+    default_format_opts = {
+        lsp_format = "fallback",
+    },
+    format_on_save = function(buffer)
+        if vim.g.format_on_save == false or vim.bo[buffer].filetype ~= "go" then
+            return nil
+        end
+        return { timeout_ms = 2000 }
+    end,
+})
+
+vim.api.nvim_create_user_command("FormatOnSave", function()
+    vim.g.format_on_save = vim.g.format_on_save == false
+    vim.notify("Format on save: " .. (vim.g.format_on_save == false and "off" or "on"))
+end, { desc = "Toggle formatting on save" })
+
+which_key.add({
+    { "<leader>c", group = "Code / change tree" },
+    { "<leader>g", group = "Go" },
+    { "<leader>h", group = "Git hunks" },
+    { "<leader>r", group = "Rename" },
+    { "<leader>s", group = "Search" },
+    { "<leader>t", group = "Debug" },
+})
 
 
 -- ============================================================
@@ -366,6 +605,16 @@ end, {
     desc = "Between the .proto and Go",
 })
 
+-- grq: a grpcurl request for the rpc under the cursor (in a .proto, or in
+-- Go on a handler or a client call), typed into the `rpc` window of the
+-- tmux session with a JSON template of the request message
+-- (lua/grpc_request.lua).
+map("n", "grq", function()
+    require("grpc_request").request(project_root)
+end, {
+    desc = "grpcurl request for the rpc under the cursor",
+})
+
 -- K on a variable, parameter or field of a struct type: the hover with that
 -- struct below it and every project type its fields name, transitively, so
 -- the fields are at hand without going to the definition (lua/go_hover.lua).
@@ -556,6 +805,30 @@ map("n", "<leader>ct", change_tree.open, {
     desc = "Change tree: build and show",
 })
 
+-- Space cp: the .proto contracts changed against main, breaking first
+-- (lua/proto_diff.lua).
+map("n", "<leader>cp", function()
+    require("proto_diff").show(project_root)
+end, {
+    desc = "Changed .proto contracts against main",
+})
+
+-- Space ce: where the errors of the function under the cursor go: the
+-- callers labelled wraps / passes / gRPC status (lua/err_flow.lua).
+map("n", "<leader>ce", function()
+    require("err_flow").show()
+end, {
+    desc = "Error flow of the function",
+})
+
+-- grP: the rpc under the cursor in every repository: handlers,
+-- contracts, calls (lua/rpc_owner.lua).
+map("n", "grP", function()
+    require("rpc_owner").show(project_root)
+end, {
+    desc = "Rpc in every repository",
+})
+
 map("n", "<leader>cT", change_tree.toggle_auto, {
     desc = "Change tree: toggle build after save",
 })
@@ -567,38 +840,8 @@ map("n", "<leader>cT", change_tree.toggle_auto, {
 
 local fzf = require("fzf-lua")
 
--- fzf-lua's default symbol icons are Nerd Font private-use glyphs and render
--- as `?` in a plain terminal font. Use ordinary Unicode characters that Menlo
--- and SF Mono carry, and keep the kind name next to the glyph.
-local symbol_icons = {
-    File = "≡",
-    Module = "▣",
-    Namespace = "▣",
-    Package = "▣",
-    Class = "◆",
-    Struct = "▦",
-    Interface = "◇",
-    Method = "ƒ",
-    Function = "ƒ",
-    Constructor = "ƒ",
-    Field = "▪",
-    Property = "▫",
-    Variable = "∙",
-    Constant = "π",
-    String = "“",
-    Number = "#",
-    Boolean = "⊤",
-    Array = "[]",
-    Object = "{}",
-    Key = "∷",
-    Null = "∅",
-    Enum = "▤",
-    EnumMember = "▸",
-    Event = "↯",
-    Operator = "±",
-    TypeParameter = "τ",
-}
-
+-- The symbol icons are fzf-lua's Nerd Font glyphs (the JetBrainsMono NF of
+-- the iTerm2 profile); the kind name stays next to the glyph.
 fzf.setup({
     -- Every picker takes the whole screen (F2 shrinks it to 90% and back);
     -- the short lists without a preview (categories, kinds) stay small.
@@ -613,10 +856,8 @@ fzf.setup({
     },
     lsp = {
         symbols = {
-            -- 1 = "<icon> <kind>", so the word stays readable even if a glyph
-            -- is missing from the terminal font.
+            -- 1 = "<icon> <kind>": the word next to the glyph.
             symbol_style = 1,
-            symbol_icons = symbol_icons,
         },
     },
 })
@@ -644,6 +885,22 @@ end, {
     desc = "Find all project files by category",
 })
 
+-- Space ?: the same search over every repository under ~/workspace and
+-- ~/Projects ($DEV_PROJECT_ROOTS, the folders of the tmux projects popup).
+map("n", "<leader>?", function()
+    require("repos_grep").live_grep()
+end, {
+    desc = "Grep every repository",
+})
+
+-- Space j: the JSON of the log line under the cursor, pretty, in a float;
+-- Enter on `path.go:N` inside opens the caller (lua/json_log.lua).
+map("n", "<leader>j", function()
+    require("json_log").show(project_root)
+end, {
+    desc = "JSON of the log line",
+})
+
 map("n", "<leader>/", function()
     categories.live_grep(project_root)
 end, {
@@ -661,6 +918,15 @@ map("x", "<leader>*", function()
     categories.grep(project_root, fzf.utils.get_visual_selection(), false)
 end, {
     desc = "Grep selection by category",
+})
+
+-- The same domain in other layers: files of the other folders named like
+-- the folder of the current file (internal/service/order/, api/order/v1/ …)
+-- and files with the same name elsewhere (lua/related.lua).
+map("n", "<leader>,", function()
+    require("related").pick(project_root)
+end, {
+    desc = "Related files: the same domain in other layers",
 })
 
 -- Files of the current package: the directory of the current file.
@@ -1058,6 +1324,15 @@ vim.api.nvim_create_autocmd("FileType", {
 -- Go
 -- ============================================================
 
+local go_cover = require("go_cover")
+go_cover.setup()
+
+-- :GoImpl io.Reader — the type under the cursor implements an interface
+-- named with its package.
+vim.api.nvim_create_user_command("GoImpl", function(opts)
+    require("go_impl").by_name(opts.args)
+end, { nargs = 1, desc = "Implement the named interface for the type under the cursor" })
+
 vim.api.nvim_create_autocmd("FileType", {
     pattern = "go",
     callback = function(event)
@@ -1067,10 +1342,7 @@ vim.api.nvim_create_autocmd("FileType", {
         vim.bo[event.buf].tabstop = 4
 
         map("n", "<leader>gf", function()
-            vim.lsp.buf.format({
-                async = false,
-                name = "gopls",
-            })
+            conform.format({ async = false })
         end, {
             buffer = event.buf,
             desc = "Go format",
@@ -1091,6 +1363,28 @@ vim.api.nvim_create_autocmd("FileType", {
         map("n", "<leader>gb", go_tasks.build, {
             buffer = event.buf,
             desc = "Go build + vet to quickfix",
+        })
+
+        -- Space gc: the test coverage of the package as bars in the sign
+        -- column, again to clear; Space gC clears every file
+        -- (lua/go_cover.lua).
+        map("n", "<leader>gc", go_cover.toggle, {
+            buffer = event.buf,
+            desc = "Go test coverage of the package",
+        })
+
+        map("n", "<leader>gC", go_cover.clear, {
+            buffer = event.buf,
+            desc = "Clear coverage",
+        })
+
+        -- Space gm on a type: pick an interface of the project, gopls
+        -- declares its missing methods (lua/go_impl.lua).
+        map("n", "<leader>gm", function()
+            require("go_impl").pick(project_root)
+        end, {
+            buffer = event.buf,
+            desc = "Go implement an interface",
         })
 
         map("n", "<leader>gt", function()

@@ -11,10 +11,16 @@
 --   tests             *_test.go, mocks and fakes, testdata/, test/, tests/
 --   internal          internal/ at any depth, without rpc and tests
 --   internal/<dir>/   one folder of it; every nested folder is listed
+--   <dir>/            any other folder, from Alt-/ in the Space f tree:
+--                     everything inside it
 --
 -- Files and grep hand the category to fd / rg as one more ignore file. Its
 -- rules rank below .gitignore, so ignored files stay hidden (Space F shows
 -- them, still within the category); a folder becomes the search path.
+-- Alt-/ in the tree opens Space / inside the folder under the cursor (the
+-- folder of a file), the typed query kept. The tree also shows the files
+-- changed against HEAD (git status) and previews a folder with the exported
+-- API of its package (lua/file_tree.lua).
 -- Symbols come from gopls, which returns at most 100 per query, and
 -- generated code can take all of them. For internal the query is narrowed
 -- on the server first: gopls ANDs space-separated fields and `'x` is an
@@ -87,13 +93,22 @@ function M.classify(rel)
     return nil
 end
 
--- A folder of internal is spelled with a trailing slash: "internal/order/".
+-- A folder is spelled with a trailing slash: "internal/order/", "api/".
 local function is_dir(category)
     return category:sub(-1) == "/"
 end
 
+local function under_internal(category)
+    return ("/" .. category):find("/internal/", 1, true) ~= nil
+end
+
+-- The ignore rules of a category: a folder of internal keeps the rules of
+-- internal, another folder has none ("folder": everything inside).
 local function rules_of(category)
-    return is_dir(category) and "internal" or category
+    if is_dir(category) then
+        return under_internal(category) and "internal" or "folder"
+    end
+    return category
 end
 
 function M.matches(category, rel)
@@ -103,11 +118,13 @@ function M.matches(category, rel)
     if not rel then
         return false
     end
-    local class = M.classify(rel)
     if is_dir(category) then
-        return class == "internal" and rel:sub(1, #category) == category
+        if rel:sub(1, #category) ~= category then
+            return false
+        end
+        return not under_internal(category) or M.classify(rel) == "internal"
     end
-    return class == category
+    return M.classify(rel) == category
 end
 
 -- .gitignore rules of a category: everything is ignored, folders are walked,
@@ -137,8 +154,11 @@ function M.ignore_lines(rules)
 end
 
 -- The ignore file of a category under stdpath("cache"), rewritten when the
--- rules change.
+-- rules change; nil for a plain folder.
 function M.ignore_file(rules)
+    if rules == "folder" then
+        return nil
+    end
     local dir = vim.fn.stdpath("cache") .. "/categories"
     local file = dir .. "/" .. rules .. ".ignore"
     local content = table.concat(M.ignore_lines(rules), "\n") .. "\n"
@@ -156,8 +176,8 @@ function M.ignore_file(rules)
     return file
 end
 
--- Queries for gopls, answers merged in this order. A folder of internal (or
--- internal itself) goes first as an exact field on the package path. Tests
+-- Queries for gopls, answers merged in this order. A folder (of internal
+-- or any other) goes first as an exact field on the package path. Tests
 -- have no such path, so `'test` (TestX, *_test packages, test/ folders) and
 -- `'mock` (MockX, mocks/) are asked besides the query itself.
 function M.gopls_queries(category, query)
@@ -171,9 +191,12 @@ function M.gopls_queries(category, query)
     elseif category == "internal" then
         queries = { with("internal") }
     elseif is_dir(category) then
-        local path = "/" .. category
-        local scope = path:match("/(internal/.*)/$") or path:match("/(internal)/$")
-        queries = { scope and not scope:find("%s") and with(scope) or query }
+        local scope = category:sub(1, -2)
+        if under_internal(category) then
+            local path = "/" .. category
+            scope = path:match("/(internal/.*)/$") or path:match("/(internal)/$") or scope
+        end
+        queries = { not scope:find("%s") and with(scope) or query }
     else
         queries = { query }
     end
@@ -183,22 +206,27 @@ function M.gopls_queries(category, query)
 end
 
 -- Categories of the project with file counts: all, rpc, tests, internal
--- (empty ones left out), then every folder of internal. With a single
--- internal/ its own folder is the same as `internal` and is not repeated.
-function M.list(root, no_ignore)
+-- (empty ones left out), `current` when it is a folder outside internal
+-- (from Alt-/), then every folder of internal. With a single internal/
+-- its own folder is the same as `internal` and is not repeated.
+function M.list(root, no_ignore, current)
     local cmd = { "rg", "--files", "--hidden", "--glob", "!.git" }
     if no_ignore then
         table.insert(cmd, "--no-ignore")
     end
     local result = vim.system(cmd, { cwd = root, text = true }):wait(10000)
 
-    local counts = { all = 0, rpc = 0, tests = 0, internal = 0 }
+    local counts = { all = 0, rpc = 0, tests = 0, internal = 0, current = 0 }
+    local extra = current and is_dir(current) and not under_internal(current) and current or nil
     local dirs, roots = {}, {}
     for rel in (result.stdout or ""):gmatch("[^\n]+") do
         counts.all = counts.all + 1
         local class = M.classify(rel)
         if class then
             counts[class] = counts[class] + 1
+        end
+        if extra and rel:sub(1, #extra) == extra then
+            counts.current = counts.current + 1
         end
         if class == "internal" then
             local start = ("/" .. rel):find("/internal/", 1, true)
@@ -217,6 +245,9 @@ function M.list(root, no_ignore)
         if counts[name] > 0 then
             table.insert(list, { name = name, count = counts[name] })
         end
+    end
+    if extra then
+        table.insert(list, { name = extra, count = counts.current })
     end
     local single_root = vim.tbl_count(roots) == 1
     local names = vim.tbl_keys(dirs)
@@ -318,7 +349,7 @@ end
 -- List the categories; Enter reopens the picker in the chosen one, Esc in
 -- the same one.
 function M.choose(spec)
-    local ok, list = pcall(M.list, spec.root, spec.no_ignore)
+    local ok, list = pcall(M.list, spec.root, spec.no_ignore, spec.category)
     if not ok then
         notify("rg is needed to list categories: " .. tostring(list), vim.log.levels.WARN)
         open[spec.kind](spec)
@@ -342,7 +373,8 @@ function M.narrowing(category)
     if category == "all" then
         return "", nil
     end
-    local flag = " --ignore-file " .. vim.fn.shellescape(M.ignore_file(rules_of(category)))
+    local ignore = M.ignore_file(rules_of(category))
+    local flag = ignore and (" --ignore-file " .. vim.fn.shellescape(ignore)) or ""
     return flag, is_dir(category) and { category:sub(1, -2) } or nil
 end
 
@@ -374,8 +406,69 @@ function M.files_command(spec)
     return cmd
 end
 
+-- Files changed against HEAD: path relative to `root` → status letter
+-- (M modified, A added, D deleted, ? untracked; a rename is D and A).
+-- Empty outside git.
+function M.changes(root)
+    local changes = {}
+    local top = vim.system({ "git", "-C", root, "rev-parse", "--show-toplevel" }, { text = true }):wait(5000)
+    if top.code ~= 0 then
+        return changes
+    end
+    local toplevel = vim.trim(top.stdout or "")
+    local status = vim.system({ "git", "-C", root, "status", "--porcelain=v1", "--untracked-files=all", "--no-renames" },
+        { text = true }):wait(10000)
+    for line in (status.stdout or ""):gmatch("[^\n]+") do
+        local x, y, path = line:sub(1, 1), line:sub(2, 2), line:sub(4)
+        path = path:match('^"(.*)"$') or path
+        local rel = path ~= "" and vim.fs.relpath(root, toplevel .. "/" .. path)
+        if rel then
+            changes[rel] = y ~= " " and y or x
+        end
+    end
+    return changes
+end
+
+-- The declarations of the Go files of a folder node, for its preview;
+-- nil without Go files, or when the AST helper is missing or slow.
+function M.folder_declarations(root, node)
+    local paths = {}
+    for _, child in ipairs(node.children or {}) do
+        if not child.dir and child.path:match("%.go$") and not child.path:match("_test%.go$") then
+            table.insert(paths, child.path)
+        end
+    end
+    if #paths == 0 then
+        return nil
+    end
+    return require("go_decls").collect_sync(root, paths, 500)
+end
+
+-- Alt-/ in the tree: Space / inside the folder under the cursor (the
+-- folder of a file), the typed query kept; the folder is the category.
+local function grep_folder_action(spec)
+    return {
+        fn = function(selected, opts)
+            local file_tree = require("file_tree")
+            local line = selected and selected[1] or ""
+            local path = file_tree.path_of(line)
+            local next_spec = updated(spec, opts)
+            if not path or path:sub(1, 1) == "@" then
+                notify("Alt-/ needs a file or a folder under the cursor")
+                open.files(next_spec)
+                return
+            end
+            local folder = path:sub(-1) == "/" and path or (path:match("^(.*/)[^/]*$") or "")
+            next_spec.kind = "live_grep"
+            next_spec.category = folder ~= "" and folder or "all"
+            open.live_grep(next_spec)
+        end,
+        header = "grep folder",
+    }
+end
+
 -- Files as a tree (lua/file_tree.lua). Alt-i / Alt-h show ignored /
--- hidden files or not, as in fzf-lua's files.
+-- hidden files or not, as in fzf-lua's files; Alt-/ greps inside a folder.
 function open.files(spec)
     local function toggle(field)
         return {
@@ -387,29 +480,38 @@ function open.files(spec)
             header = false,
         }
     end
-    -- Pinned files, then recent ones (without the current file and the
-    -- pinned ones) head the tree.
+    -- Pinned files, the files changed against HEAD and recent ones
+    -- (without the current file and the pinned ones) head the tree.
     local pins = require("pins")
     local current = vim.api.nvim_buf_get_name(0)
     local pinned = pins.list(spec.root)
     local recent = vim.tbl_filter(function(rel)
         return not vim.tbl_contains(pinned, rel)
     end, pins.recent(spec.root, 8, current))
+    local changes = M.changes(spec.root)
+    local changed = vim.tbl_keys(changes)
+    table.sort(changed)
     require("file_tree").open({
         cwd = spec.root,
         cmd = M.files_command(spec),
         query = spec.query,
         current = current,
         no_ignore = spec.no_ignore,
+        changes = changes,
+        declarations = function(node)
+            return M.folder_declarations(spec.root, node)
+        end,
         groups = {
-            { name = "pinned", mark = "◆", paths = pinned, numbered = true },
-            { name = "recent", mark = "★", paths = recent },
+            { name = "pinned", mark = "", paths = pinned, numbered = true },
+            { name = "changed", mark = "", paths = changed, statuses = changes, closed = true },
+            { name = "recent", mark = "", paths = recent, closed = true },
         },
         title = title("files", spec.category) .. (spec.no_ignore and "· with ignored " or ""),
         actions = {
             [M.key] = switch_action(spec),
             ["alt-i"] = toggle("no_ignore"),
             ["alt-h"] = toggle("hidden"),
+            ["alt-/"] = grep_folder_action(spec),
         },
     })
 end
@@ -638,8 +740,9 @@ function M.go_files_command(spec)
             vim.list_extend(cmd, { "--glob", "!**/" .. dir .. "/**" })
         end
     end
-    if spec.category ~= "all" then
-        vim.list_extend(cmd, { "--ignore-file", M.ignore_file(rules_of(spec.category)) })
+    local ignore = spec.category ~= "all" and M.ignore_file(rules_of(spec.category)) or nil
+    if ignore then
+        vim.list_extend(cmd, { "--ignore-file", ignore })
     end
     if cmd[1] == "fd" then
         table.insert(cmd, ".")

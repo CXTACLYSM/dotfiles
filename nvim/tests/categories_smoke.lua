@@ -2,8 +2,10 @@
 -- contracts, generated code, tests, mocks and internal folders): the rules,
 -- the same files from the Lua rules and from fd / rg with the ignore file,
 -- Alt-c in files / grep / symbols keeping the query (fzf-lua and the file
--- tree stubbed), workspace symbols from gopls narrowed and filtered by
--- category, and declarations by kind (Alt-k) from the AST helper.
+-- tree stubbed), any folder as a category and Alt-/ in the tree, the
+-- changed files and the folder declarations handed to the tree, workspace
+-- symbols from gopls narrowed and filtered by category, and declarations
+-- by kind (Alt-k) from the AST helper.
 local categories = require("categories")
 local fzf = require("fzf-lua")
 local root = vim.fn.getcwd()
@@ -47,13 +49,22 @@ end
 assert(categories.matches("internal/order/", "internal/order/repo/pg.go"), "nested folder")
 assert(not categories.matches("internal/order/", "internal/orders/batch.go"), "folder prefix stops at /")
 assert(not categories.matches("internal/order/", "internal/order/service_test.go"), "tests are not internal")
+assert(categories.matches("api/", "api/order/v1/order.proto") and categories.matches("pkg/", "pkg/api/order/v1/order.pb.go"),
+    "any folder: everything inside")
+assert(not categories.matches("api/", "internal/order/service.go") and not categories.matches("api/", "apis/x.go"),
+    "another folder stays out")
 assert(not categories.matches("rpc", nil) and categories.matches("all", nil), "outside the root")
 same(categories.gopls_queries("all", " Save "), { "Save" }, "all")
 same(categories.gopls_queries("all", ""), {}, "nothing to ask")
 same(categories.gopls_queries("internal/order/", "Save"), { "'internal/order Save" }, "folder")
 same(categories.gopls_queries("svc/internal/pay/", ""), { "'internal/pay" }, "monorepo folder")
+same(categories.gopls_queries("pkg/api/order/v1/", "Create"), { "'pkg/api/order/v1 Create" }, "a folder outside internal")
+same(categories.gopls_queries("cmd/", ""), { "'cmd" }, "an empty query inside a folder")
 same(categories.gopls_queries("internal", "Save"), { "'internal Save" }, "internal")
 same(categories.gopls_queries("tests", "Save"), { "Save", "'test Save", "'mock Save" }, "tests")
+same({ categories.narrowing("api/") }, { "", { "api" } }, "a folder narrows by path alone")
+assert(categories.narrowing("internal/order/")[1] ~= "" and categories.narrowing("internal/order/") ~= "",
+    "a folder of internal keeps the ignore file")
 assert(categories.symbol_name("internal/order.Service.Save") == "order.Service.Save", "package path dropped")
 print("CATEGORY_RULES_OK")
 
@@ -72,12 +83,19 @@ same(list, {
     ["internal/orders/"] = 1,
 }, "categories")
 assert(categories.list(root, true)[1].count == 14, "Space F counts ignored files")
+local with_folder = {}
+for index, item in ipairs(categories.list(root, false, "cmd/")) do
+    with_folder[index] = item.name .. " " .. item.count
+end
+same(with_folder, { "all 13", "rpc 4", "tests 3", "internal 3", "cmd/ 1", "internal/order/ 2", "internal/order/repo/ 1", "internal/orders/ 1" },
+    "the current folder is listed after the fixed categories")
+assert(#categories.list(root, false, "internal/order/") == 7, "a folder of internal is not repeated")
 print("CATEGORY_LIST_OK")
 
 -- fd and rg with the ignore file list what the Lua rules say, ignored files
 -- stay out unless Space F.
 local every = lines_of("rg --files --hidden --glob '!.git' --no-ignore")
-for _, category in ipairs({ "rpc", "tests", "internal", "internal/order/" }) do
+for _, category in ipairs({ "rpc", "tests", "internal", "internal/order/", "api/", "pkg/api/" }) do
     for _, no_ignore in ipairs({ false, true }) do
         local flag, paths = categories.narrowing(category)
         local where = paths and (" " .. table.concat(paths, " ")) or ""
@@ -142,6 +160,45 @@ assert(files.opts.title == " files · all " and files.opts.cmd[#files.opts.cmd] 
 assert(vim.tbl_contains(files.opts.cmd, "--hidden") and not vim.tbl_contains(files.opts.cmd, "--ignore-file"),
     "hidden files, no category: " .. vim.inspect(files.opts.cmd))
 assert(files.opts.actions[categories.key].header, "Alt-c in the header")
+
+-- The changed files (everything is untracked in this repository without
+-- commits) and the declarations of a folder go to the tree.
+assert(files.opts.changes["internal/order/service.go"] == "?" and files.opts.changes["cmd/app/main.go"] == "?",
+    "git status of the files: " .. vim.inspect(files.opts.changes))
+assert(files.opts.groups[2].name == "changed" and files.opts.groups[2].statuses == files.opts.changes
+    and vim.tbl_contains(files.opts.groups[2].paths, "internal/orders/batch.go"), "the changed group")
+local declared_in_order = files.opts.declarations({ children = {
+    { path = "internal/order/service.go" }, { path = "internal/order/service_test.go" }, { dir = true, path = "internal/order/mocks/" },
+} })
+same(vim.tbl_map(function(declaration)
+    return declaration.kind .. " " .. require("go_decls").label(declaration)
+end, declared_in_order), { "struct Service", "method (*Service) CreateOrder" }, "declarations of the Go files of a folder")
+assert(files.opts.declarations({ children = { { path = "api/order/v1/order.proto" } } }) == nil, "no Go files, no declarations")
+
+-- Alt-/: grep inside the folder under the cursor, the query kept; a file
+-- means its folder, a group nothing.
+local tree_state = file_tree.new_state({ "internal/order/service.go", "api/order/v1/order.proto", "go.mod" })
+file_tree.set_groups(tree_state, { { name = "pinned", mark = "◆", paths = { "go.mod" }, numbered = true } })
+file_tree.reveal(tree_state, "api/order/v1/order.proto")
+local tree_lines = {}
+for _, line in ipairs(file_tree.tree_lines(tree_state)) do
+    tree_lines[file_tree.path_of(line)] = line
+end
+files.opts.actions["alt-/"].fn({ tree_lines["internal/order/"] }, { last_query = "Create" })
+local folder_grep = last("live_grep")
+assert(folder_grep.opts.search == "Create" and folder_grep.opts.winopts.title == " grep · internal/order/ ",
+    "grep in the folder with the query: " .. vim.inspect(folder_grep.opts.winopts))
+same(folder_grep.opts.search_paths, { "internal/order" }, "the folder is the search path")
+assert(folder_grep.opts.rg_opts:find("internal.ignore", 1, true), "a folder of internal keeps its rules")
+files.opts.actions["alt-/"].fn({ tree_lines["api/order/v1/order.proto"] }, { last_query = "rpc" })
+folder_grep = last("live_grep")
+assert(folder_grep.opts.winopts.title == " grep · api/order/v1/ " and folder_grep.opts.rg_opts == fzf.defaults.grep.rg_opts,
+    "a file: its folder, everything inside")
+same(folder_grep.opts.search_paths, { "api/order/v1" }, "the folder of the file")
+files.opts.actions["alt-/"].fn({ tree_lines["@pinned/"] }, { last_query = "x" })
+assert(last("files").opts.query == "x", "a group line: the tree again, the query kept")
+choose(last("files"), { last_query = "x" }, nil)
+files = last("files")
 local chooser = choose(files, { last_query = "serv" }, "internal/order/")
 assert(fzf.utils.strip_ansi_coloring(chooser.contents[1]):match("^● all"), "current category marked")
 files = last("files")
@@ -301,22 +358,23 @@ end
 
 choose(symbols, { last_query = "Create" }, "all")
 symbols = last("fzf_live")
+local icons = require("fzf-lua.config").globals.lsp.symbols.symbol_icons
 local kinds = choose_kind(symbols, { last_query = "Create" }, "struct")
 same(kinds_of(kinds), { "all 12", "struct 4", "interface 1", "func 4", "method 3" }, "kinds with counts")
 local structs = last("fzf_exec")
 assert(structs.opts.query == "Create" and structs.opts.winopts.title == " symbols · all · struct ",
     "the query and the kind in the title")
 same(declared(structs), {
-    "▦ struct MockStore @ internal/order/mocks/store_mock.go:5",
-    "▦ struct Service @ internal/order/service.go:3",
-    "▦ struct CreateOrderRequest @ pkg/api/order/v1/order.pb.go:5",
-    "▦ struct FieldValidationError @ pkg/api/order/v1/order.pb.validate.go:5",
+    "" .. icons.Struct .. " struct MockStore @ internal/order/mocks/store_mock.go:5",
+    "" .. icons.Struct .. " struct Service @ internal/order/service.go:3",
+    "" .. icons.Struct .. " struct CreateOrderRequest @ pkg/api/order/v1/order.pb.go:5",
+    "" .. icons.Struct .. " struct FieldValidationError @ pkg/api/order/v1/order.pb.validate.go:5",
 }, "every struct, generated ones too")
 choose(structs, { last_query = "" }, "internal/order/")
 structs = last("fzf_exec")
-same(declared(structs), { "▦ struct Service @ internal/order/service.go:3" }, "kind and category together")
+same(declared(structs), { "" .. icons.Struct .. " struct Service @ internal/order/service.go:3" }, "kind and category together")
 choose_kind(structs, { last_query = "" }, "method")
-same(declared(last("fzf_exec")), { "ƒ method (*Service) CreateOrder @ internal/order/service.go:5" },
+same(declared(last("fzf_exec")), { "" .. icons.Method .. " method (*Service) CreateOrder @ internal/order/service.go:5" },
     "methods with their receiver")
 choose_kind(last("fzf_exec"), { last_query = "Save" }, "all")
 symbols = last("fzf_live")

@@ -17,6 +17,7 @@ for _, name in ipairs({
     "GoDebugTest", "GoDebug", "DapContinue", "DapToggleBreakpoint", "Gitsigns",
     "ChangeTree", "ChangeTreeAuto", "ChangeTreeCancel",
     "ChangeTreeText", "ChangeTreeLedger", "ChangeTreeTrace", "ChangeTreeIndex",
+    "Neotree", "FormatOnSave", "GoImpl", "BufferLineCycleNext",
 }) do
     assert(vim.fn.exists(":" .. name) == 2, "missing command :" .. name)
 end
@@ -31,9 +32,11 @@ for _, lhs in ipairs({
     "<leader>q", "<leader>sd", "<leader>sq", "<leader>ih", "]q", "[q",
     "]f", "[f", "]a", "[a",
     "gre", "grc", "gro", "<leader>ct", "<leader>cT",
-    "gp", "gP", "gI", "<leader>ga", "<leader>*", "<leader>.",
+    "gp", "gP", "gI", "<leader>ga", "<leader>*", "<leader>.", "<leader>,",
     "<leader>st", "]t", "[t", "<leader>sQ",
-    "<leader>f", "<leader>F", "<leader>/", "<leader>sS", "grp", "<leader>p", "<leader>P", "<M-1>",
+    "<leader>f", "<leader>F", "<leader>/", "<leader>sS", "grp", "grq", "<leader>p", "<leader>P", "<M-1>",
+    "<leader>e", "<leader>?", "<leader>j", "<leader>cp", "<leader>ce", "grP",
+    "]b", "[b", "<leader>x", "<leader>X",
 }) do
     assert(has_map("n", lhs), "missing normal mapping " .. lhs)
 end
@@ -73,10 +76,11 @@ assert(retrigger.member_min_length == 1, "member completion from the 1st charact
 
 local symbols = require("fzf-lua.config").globals.lsp.symbols
 assert(symbols.symbol_style == 1, "icon plus kind name")
-assert(symbols.symbol_icons.Function == "ƒ" and symbols.symbol_icons.Constant == "π", "portable symbol icons")
+assert(symbols.symbol_icons.Function == "󰊕" and symbols.symbol_icons.Struct == "󰆼", "fzf-lua's Nerd Font symbol icons")
 for kind, icon in pairs(symbols.symbol_icons) do
+    assert(vim.fn.strdisplaywidth(icon) == 1, "one column for " .. kind)
     for _, code in ipairs(vim.fn.str2list(icon)) do
-        assert(code < 0xE000 or code > 0xF8FF, "private-use glyph for " .. kind)
+        assert((code >= 0xE000 and code <= 0xF8FF) or code >= 0xF0000, "a Nerd Font glyph for " .. kind)
     end
 end
 
@@ -103,3 +107,33 @@ change_tree.toggle_auto()
 assert(change_tree.opts.auto == false, "toggle turns it off again")
 
 print("FULL_INIT_OK")
+
+-- Icons and the panel: devicons knows Go by name, which-key is set up and
+-- names the prefixes, neo-tree keeps Space as the leader in its window.
+local glyph = require("nvim-web-devicons").get_icon("main.go", nil, { default = true })
+assert(glyph and glyph ~= "", "devicons glyph for a Go file")
+assert(require("nvim-web-devicons").get_icon("no-such-kind", nil, {}) ~= nil, "a default icon for a file of no known type")
+require("neo-tree").ensure_config()
+local neotree = require("neo-tree.setup").config
+local mappings = neotree.window.mappings
+assert(mappings["<space>"] == "none" and mappings["<Right>"] == "open" and mappings["<Left>"] == "close_node",
+    "neo-tree keys: " .. vim.inspect(mappings))
+assert(neotree.filesystem.follow_current_file.enabled, "the panel follows the current file")
+-- flash on s, nvim-surround on ys / cs / ds with Visual S, conform runs
+-- gofumpt on Go only and leaves other file types alone.
+for _, lhs in ipairs({ "s", "S", "ys", "cs", "ds" }) do
+    assert(has_map("n", lhs), "missing normal mapping " .. lhs)
+end
+assert(vim.fn.maparg("S", "x"):find("surround", 1, true), "Visual S is nvim-surround's")
+assert(vim.fn.maparg("s", "x") ~= "" and vim.fn.maparg("r", "o") ~= "", "flash in Visual and as a motion")
+local conform = require("conform")
+assert(vim.deep_equal(conform.formatters_by_ft.go, { "gofumpt" }), "gofumpt for Go")
+assert(conform.formatters_by_ft.lua == nil, "Lua is not formatted")
+-- The status line stays Neovim's own.
+assert(not vim.o.statusline:find("%%f") and not vim.o.statusline:find("%%F") and vim.o.statusline:find("%l", 1, true)
+    and vim.o.winborder == "rounded", "the status line without the file name, rounded floating windows")
+local signs = vim.diagnostic.config().signs.text
+assert(signs[vim.diagnostic.severity.ERROR] == "" and signs[vim.diagnostic.severity.HINT] == "", "diagnostic glyphs")
+local wk_ok = pcall(require("which-key").add, { { "<leader>z", group = "probe" } })
+assert(wk_ok, "which-key accepts a group")
+print("INIT_ICONS_OK")

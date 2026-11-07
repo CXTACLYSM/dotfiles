@@ -30,6 +30,8 @@ local modules = {
     "file_tree",
     "go_decls",
     "go_proto",
+    "grpc_request",
+    "related",
     "pins",
     "sql_nav",
     "markdown_view",

@@ -46,7 +46,8 @@ assert(keys["ctrl-x"](1) == "reload+pos(1)", "Ctrl-x unpins")
 same(pins.list(root), { "internal/order/service.go" }, "unpinned")
 assert(reloads == 2, "the list is written anew after a change")
 local line = fzf.utils.strip_ansi_coloring(pins.lines(root)[1])
-assert(line:match("^1  service%.go  internal/order/") and line:sub(-#"internal/order/service.go") == "internal/order/service.go",
+local go_glyph = require("file_tree").icon("service.go")
+assert(line:match("^1  " .. vim.pesc(go_glyph) .. " service%.go  internal/order/") and line:sub(-#"internal/order/service.go") == "internal/order/service.go",
     "list line: " .. line)
 local real_exec, picked = fzf.fzf_exec, nil
 fzf.fzf_exec = function(contents, opts)
