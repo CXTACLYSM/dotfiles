@@ -103,7 +103,10 @@ function M.open()
     local fzf = require("fzf-lua")
     local cursor = vim.api.nvim_win_get_cursor(0)
     local context = M.context(bufnr, cursor[1] - 1, cursor[2])
-    fzf.lsp_finder(M.finder_opts(context, fzf.utils))
+    local opts = M.finder_opts(context, fzf.utils)
+    -- A list: it starts in the normal mode (lua/picker_mode.lua).
+    opts.prompt = require("picker_mode").prompt("")
+    fzf.lsp_finder(opts)
 end
 
 return M

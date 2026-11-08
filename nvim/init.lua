@@ -272,6 +272,16 @@ require("neo-tree").setup({
             hide_gitignored = true,
             hide_by_name = { ".git", ".DS_Store" },
         },
+        window = {
+            mappings = {
+                -- / filters the tree; Ctrl-h drops the filter (also Ctrl-x).
+                ["<C-h>"] = "clear_filter",
+            },
+            fuzzy_finder_mappings = {
+                -- In the filter box: Ctrl-h closes it and drops the filter.
+                ["<C-h>"] = "close_clear_filter",
+            },
+        },
     },
 })
 
@@ -304,6 +314,36 @@ require("bufferline").setup({
         },
     },
     highlights = require("catppuccin.special.bufferline").get_theme(),
+})
+
+-- Neovim starts in an empty [No Name] buffer. Opening a file in that
+-- window reuses it, but a file opened in a split (peek, quickfix, Ctrl-v
+-- in a picker) leaves it behind as a tab once its window is closed, so
+-- an empty unnamed buffer that no window shows any more is dropped.
+vim.api.nvim_create_autocmd({ "BufEnter", "WinClosed" }, {
+    group = vim.api.nvim_create_augroup("drop_empty_buffer", { clear = true }),
+    callback = function()
+        vim.schedule(function()
+            local dropped = false
+            for _, buffer in ipairs(vim.api.nvim_list_bufs()) do
+                if vim.api.nvim_buf_is_valid(buffer)
+                    and vim.bo[buffer].buflisted
+                    and vim.bo[buffer].buftype == ""
+                    and not vim.bo[buffer].modified
+                    and vim.api.nvim_buf_get_name(buffer) == ""
+                    and vim.fn.bufwinid(buffer) == -1
+                    and vim.api.nvim_buf_line_count(buffer) == 1
+                    and vim.api.nvim_buf_get_lines(buffer, 0, 1, false)[1] == ""
+                then
+                    vim.api.nvim_buf_delete(buffer, {})
+                    dropped = true
+                end
+            end
+            if dropped then
+                vim.cmd.redrawtabline()
+            end
+        end)
+    end,
 })
 
 map("n", "]b", "<cmd>BufferLineCycleNext<CR>", { desc = "Next tab" })
@@ -417,10 +457,10 @@ big_file.setup({
 opt.foldtext = ""
 opt.fillchars:append({ fold = " " })
 
--- SQL files too; SQL inside Go strings comes from
+-- SQL and .proto files too; SQL inside Go strings comes from
 -- after/queries/go/injections.scm.
 vim.api.nvim_create_autocmd("FileType", {
-    pattern = { "go", "gomod", "gosum", "gowork", "sql" },
+    pattern = { "go", "gomod", "gosum", "gowork", "sql", "proto" },
     callback = function(event)
         if not big_file.is_marked(event.buf) then
             vim.treesitter.start(event.buf)
@@ -472,6 +512,9 @@ for lhs, spec in pairs({
     ["[F"] = { "goto_previous_end", "@function.outer" },
     ["]a"] = { "goto_next_start", "@parameter.inner" },
     ["[a"] = { "goto_previous_start", "@parameter.inner" },
+    -- @class.outer in Go is a struct or an interface declaration.
+    ["]s"] = { "goto_next_start", "@class.outer" },
+    ["[s"] = { "goto_previous_start", "@class.outer" },
 }) do
     map({ "n", "x", "o" }, lhs, function()
         ts_move[spec[1]](spec[2], "textobjects")
@@ -479,6 +522,65 @@ for lhs, spec in pairs({
         desc = spec[1] .. " " .. spec[2],
     })
 end
+
+-- Jumps between the Go keywords: ] next, [ previous, with a count, as
+-- motions too (d]e, v]m). The nodes are in after/queries/go/moves.scm.
+for key, spec in pairs({
+    m = { "method", "method" },
+    e = { "err", "if err != nil" },
+    R = { "return", "return" },
+    g = { "go", "go (goroutine)" },
+    G = { "defer", "defer" },
+    l = { "loop", "for" },
+    w = { "switch", "switch / select" },
+    k = { "case", "case" },
+    i = { "interface", "interface" },
+    v = { "var", "var / const of the file" },
+    T = { "test", "func Test…" },
+}) do
+    local capture = "@" .. spec[1] .. ".outer"
+    map({ "n", "x", "o" }, "]" .. key, function()
+        ts_move.goto_next_start(capture, "moves")
+    end, { desc = "Next " .. spec[2] })
+    map({ "n", "x", "o" }, "[" .. key, function()
+        ts_move.goto_previous_start(capture, "moves")
+    end, { desc = "Previous " .. spec[2] })
+end
+
+-- Over the syntax tree (lua/code_nav.lua): Alt-j / Alt-k the next and
+-- previous node of the same level (statement to statement), Alt-h the
+-- parent, Alt-l into the first child, [S / ]S the start and end of the
+-- declaration around the cursor.
+local code_nav = require("code_nav")
+
+map({ "n", "x", "o" }, "<M-j>", function() code_nav.sibling(1) end, { desc = "Next node of the level" })
+map({ "n", "x", "o" }, "<M-k>", function() code_nav.sibling(-1) end, { desc = "Previous node of the level" })
+map({ "n", "x", "o" }, "<M-h>", code_nav.parent, { desc = "Parent node" })
+map({ "n", "x", "o" }, "<M-l>", code_nav.child, { desc = "First child node" })
+map({ "n", "x", "o" }, "[S", function() code_nav.declaration(false) end, { desc = "Start of the declaration around" })
+map({ "n", "x", "o" }, "]S", function() code_nav.declaration(true) end, { desc = "End of the declaration around" })
+
+-- In a .proto the same jumps over the contract, by its syntax tree
+-- (after/queries/proto/moves.scm): ]p / [p an rpc, ]M / [M a message,
+-- ]s / [s a message or an enum.
+vim.api.nvim_create_autocmd("FileType", {
+    pattern = "proto",
+    group = vim.api.nvim_create_augroup("proto_moves", { clear = true }),
+    callback = function(event)
+        for key, spec in pairs({
+            p = { "@rpc.outer", "rpc" },
+            M = { "@message.outer", "message" },
+            s = { "@type.outer", "message or enum" },
+        }) do
+            vim.keymap.set({ "n", "x", "o" }, "]" .. key, function()
+                ts_move.goto_next_start(spec[1], "moves")
+            end, { buffer = event.buf, desc = "Next " .. spec[2] })
+            vim.keymap.set({ "n", "x", "o" }, "[" .. key, function()
+                ts_move.goto_previous_start(spec[1], "moves")
+            end, { buffer = event.buf, desc = "Previous " .. spec[2] })
+        end
+    end,
+})
 
 -- Jump to the start of the nearest enclosing Go callable.
 -- Handles named functions, methods, and anonymous func literals.
@@ -842,7 +944,16 @@ local fzf = require("fzf-lua")
 
 -- The symbol icons are fzf-lua's Nerd Font glyphs (the JetBrainsMono NF of
 -- the iTerm2 profile); the kind name stays next to the glyph.
+-- Every picker has a normal mode as Space f (lua/picker_mode.lua): Esc
+-- leaves typing, j / k move, l or Enter opens, q or Esc closes, i types
+-- again. The lists (Space ss, Space b, grr, Space p, Space ,) start in
+-- it; the live searches start typing. fzf-lua's "hide" of Esc is off so
+-- Esc reaches fzf.
+local picker_mode = require("picker_mode")
+
 fzf.setup({
+    defaults = { no_hide = true },
+    keymap = { fzf = vim.tbl_extend("force", { true }, picker_mode.binds()) },
     -- Every picker takes the whole screen (F2 shrinks it to 90% and back);
     -- the short lists without a preview (categories, kinds) stay small.
     -- Preview to the right of the list while the picker is wider than 80
@@ -970,11 +1081,15 @@ end, {
     desc = "SQL queries of the project",
 })
 
-map("n", "<leader>b", "<cmd>FzfLua buffers<CR>", {
+map("n", "<leader>b", function()
+    fzf.buffers({ prompt = picker_mode.prompt("") })
+end, {
     desc = "Buffers",
 })
 
-map("n", "<leader>ss", "<cmd>FzfLua lsp_document_symbols<CR>", {
+map("n", "<leader>ss", function()
+    fzf.lsp_document_symbols({ prompt = picker_mode.prompt("") })
+end, {
     desc = "Document symbols",
 })
 

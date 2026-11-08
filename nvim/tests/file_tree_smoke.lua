@@ -146,6 +146,9 @@ for _, shell in ipairs({ "sh", vim.o.shell }) do
     assert(run("Files> ", "") == "change-prompt(Tree> )+reload-sync(cat '" .. state.tree_file .. "')+first",
         shell .. ": cleared")
     assert(run("Tree> ", "") == "" and run("Files> ", "se") == "", shell .. ": no reload otherwise")
+    assert(run("Tree ·N> ", "ser") == "change-prompt(Files ·N> )+reload(cat '/flat file')", shell .. ": typing in normal mode")
+    assert(run("Files ·N> ", "") == "change-prompt(Tree ·N> )+reload-sync(cat '" .. state.tree_file .. "')+first",
+        shell .. ": cleared in normal mode")
 end
 local flat = file_tree.flat_lines({ "internal/order/service.go", "go.mod", "LICENSE" })
 assert(plain(flat[1]) == "▪ internal/order/service.go" and file_tree.path_of(flat[2]) == "go.mod"
@@ -343,7 +346,8 @@ local opened = file_tree.open({
 local opts = picked.opts
 assert(opts.winopts.title == " files · all ", "the title")
 assert(require("fzf-lua.config").globals.winopts.fullscreen == true, "pickers take the whole screen")
-assert(opts.prompt == "Tree> " and opts.fzf_opts["--with-nth"] == "{1}", "tree prompt, paths hidden")
+assert(opts.prompt == "Tree ·N> " and opened.normal and opts.fzf_opts["--with-nth"] == "{1}",
+    "tree prompt in normal mode, paths hidden")
 for _, key in ipairs({ "right", "left", "enter", "change", "load" }) do
     assert(opts.keymap.fzf[key]:match("^transform:"), "bind " .. key)
 end
@@ -373,7 +377,7 @@ local user = opts.previewer._ctor().parse_entry({}, line_of("internal/user/"))
 same(vim.tbl_map(row_text, user.content), { "keeps accounts.", "", "▪ user.go" }, "a folder without declarations: comment and files")
 
 file_tree.open({ cwd = root, cmd = { "fd", "--type", "f", "." }, query = "serv", current = source })
-assert(picked.opts.prompt == "Files> " and picked.opts.query == "serv", "a query starts in the search")
+assert(picked.opts.prompt == "Files> " and picked.opts.query == "serv", "a query starts in the search, typing")
 local searched = vim.tbl_map(plain, load_lines())
 assert(#searched == 9 and vim.tbl_contains(searched, "▪ internal/order/service.go"), "search lines are marked paths")
 fzf.fzf_exec = real_exec
@@ -419,12 +423,16 @@ end, 50), "the cursor starts on the first quick file: " .. vim.api.nvim_buf_get_
 
 file_tree.open({ cwd = root, cmd = { "fd", "--type", "f", "." }, current = source, title = " files · all " })
 wait_screen("tree with the current file", "    ▪ service.go")
--- Esc: normal mode; j is a move, not a letter; i types again.
-press("\27")
-wait_screen("Esc: the normal mode in the prompt", "Tree ·N>")
+-- Normal mode from the start: j is a move, not a letter; i types, Esc
+-- returns to normal.
+wait_screen("the normal mode in the prompt", "Tree ·N>")
 press("j")
 vim.wait(300)
 assert(not screen():find("Tree ·N> j", 1, true) and screen():find("11/11", 1, true), "j moved instead of typing:\n" .. screen())
+press("i")
+wait_screen("i: typing", "Tree> ")
+press("\27")
+wait_screen("Esc: normal again", "Tree ·N>")
 press("i")
 wait_screen("i: typing again", "Tree> ")
 press(left)
@@ -443,6 +451,39 @@ assert(vim.wait(10000, function()
     return vim.api.nvim_buf_get_name(0):match("api/order/v1/order%.proto$") ~= nil
 end, 50), "Enter on a file opens it: " .. vim.api.nvim_buf_get_name(0))
 print("FILE_TREE_FZF_OK")
+
+-- Any other picker has the same normal mode (lua/picker_mode.lua), run
+-- by fzf's shell: a list starts in it, i types, Esc returns, l accepts,
+-- Esc Esc closes without hiding.
+local picker_mode = require("picker_mode")
+local accepted
+local function list_picker()
+    accepted = nil
+    fzf.fzf_exec({ "alpha", "beta", "gamma" }, {
+        prompt = picker_mode.prompt("List"),
+        actions = { enter = function(selected) accepted = selected[1] end },
+    })
+end
+list_picker()
+wait_screen("a list starts in the normal mode", "List ·N>")
+press("j")
+vim.wait(300)
+assert(not screen():find("List ·N> j", 1, true), "j moved instead of typing:\n" .. screen())
+press("i")
+wait_screen("i: typing", "List> ")
+press("b")
+wait_screen("the letters are typed", "List> b")
+press("\27")
+wait_screen("Esc: the normal mode keeps the query", "List ·N> b")
+press("l")
+assert(vim.wait(5000, function() return accepted ~= nil end, 50), "l accepts")
+assert(accepted:find("beta", 1, true), "the filtered line is accepted: " .. accepted)
+list_picker()
+wait_screen("the list again", "List ·N>")
+press("\27")
+assert(vim.wait(5000, function() return term() == nil end, 50), "Esc in the normal mode closes the picker")
+assert(vim.fn.maparg("<Esc>", "t") == "", "no hide keymap on Esc")
+print("PICKER_MODE_FZF_OK")
 
 print("FILE_TREE_SMOKE_OK")
 

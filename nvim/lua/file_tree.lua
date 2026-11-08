@@ -43,11 +43,12 @@ local M = {}
 
 M.prompts = { tree = "Tree> ", flat = "Files> ", tree_normal = "Tree ·N> ", flat_normal = "Files ·N> " }
 
--- Esc leaves typing for a normal mode (·N in the prompt): j / k move,
+-- The picker starts in a normal mode (·N in the prompt): j / k move,
 -- h / l close and open like ← / →, g the first line, Enter opens, q or
--- Esc closes; i returns to typing. In typing mode the same letters are
--- typed (fzf tells no G from g, so there is no G). M.mode_key answers
--- fzf for one of these keys.
+-- Esc closes; i goes to typing, where the same letters are typed and
+-- Esc returns to normal (fzf tells no G from g, so there is no G). A
+-- picker opened with a query starts typing. M.mode_key answers fzf for
+-- one of these keys.
 local normal_actions = { j = "down", k = "up", g = "first", q = "abort" }
 M.mode_keys = { "esc", "i", "j", "k", "h", "l", "g", "q" }
 
@@ -573,13 +574,18 @@ function M.key(state, key, query, line)
 end
 
 -- fzf's `change`: the flat list once there is a query, the tree again
--- when it is cleared. The prompt says which one is loaded.
+-- when it is cleared. The prompt says which one is loaded and keeps the
+-- mode (·N).
 function M.change_command(state)
-    return string.format([[case "$FZF_PROMPT" in ]]
-        .. [["%s") [ -n "$FZF_QUERY" ] && echo "change-prompt(%s)+reload(cat %s)" ;; ]]
-        .. [[*) [ -z "$FZF_QUERY" ] && echo "change-prompt(%s)+reload-sync(cat %s)+first" ;; esac; true]],
-        M.prompts.tree, M.prompts.flat, vim.fn.shellescape(state.flat_file),
-        M.prompts.tree, vim.fn.shellescape(state.tree_file))
+    local flat, tree = vim.fn.shellescape(state.flat_file), vim.fn.shellescape(state.tree_file)
+    local cases = {}
+    for _, mode in ipairs({ "", "_normal" }) do
+        table.insert(cases, string.format([["%s") [ -n "$FZF_QUERY" ] && echo "change-prompt(%s)+reload(cat %s)" ;; ]],
+            M.prompts["tree" .. mode], M.prompts["flat" .. mode], flat))
+        table.insert(cases, string.format([["%s") [ -z "$FZF_QUERY" ] && echo "change-prompt(%s)+reload-sync(cat %s)+first" ;; ]],
+            M.prompts["flat" .. mode], M.prompts["tree" .. mode], tree))
+    end
+    return [[case "$FZF_PROMPT" in ]] .. table.concat(cases) .. "esac; true"
 end
 
 -- ============================================================
@@ -723,6 +729,8 @@ function M.open(opts)
     state.flat_file = dir .. "/flat"
     local query = opts.query or ""
     local flat = query ~= ""
+    -- Normal mode first; a query means the user is typing.
+    state.normal = not flat
 
     local actions = {}
     for key, action in pairs(fzf.defaults.actions.files) do
@@ -807,9 +815,9 @@ function M.open(opts)
     end, {
         cwd = opts.cwd,
         query = query,
-        -- Esc is the normal mode here (M.mode_key), not fzf-lua's hide.
+        -- Esc is handled here (M.mode_key), not by fzf-lua's hide.
         no_hide = true,
-        prompt = flat and M.prompts.flat or M.prompts.tree,
+        prompt = flat and M.prompts.flat or M.prompts.tree_normal,
         previewer = previewer(state, opts.declarations),
         actions = actions,
         keymap = keymap,

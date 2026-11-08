@@ -62,10 +62,9 @@ end
 -- Lines for the picker, "<mark> name  dir/[ · same name]<nbsp>path": the
 -- files of other folders of the domain, then files with the same name in
 -- other folders. Also the domain and the two counts.
-function M.lines(root, rel, paths)
-    local file_tree = require("file_tree")
-    local utils = require("fzf-lua").utils
-    local paint = file_tree.painters()
+-- The files of the domain of `rel` in other folders and the files named
+-- like it elsewhere, both sorted, and the domain.
+function M.split(rel, paths)
     local domain, from = M.domain(rel)
     local dir = rel:match("^(.*/)[^/]*$") or ""
     local stem = M.stem(rel)
@@ -82,6 +81,14 @@ function M.lines(root, rel, paths)
     end
     table.sort(by_domain)
     table.sort(by_name)
+    return by_domain, by_name, domain
+end
+
+function M.lines(root, rel, paths)
+    local file_tree = require("file_tree")
+    local utils = require("fzf-lua").utils
+    local paint = file_tree.painters()
+    local by_domain, by_name, domain = M.split(rel, paths)
     local lines = {}
     local function add(path, note)
         local folder, name = path:match("^(.*/)([^/]*)$")
@@ -97,16 +104,24 @@ function M.lines(root, rel, paths)
     return lines, domain, #by_domain, #by_name
 end
 
-function M.pick(root)
+-- The current file relative to the root and the files of the project.
+local function current_and_paths(root)
     local current = vim.api.nvim_buf_get_name(0)
     local rel = current ~= "" and vim.fs.relpath(root, current)
     if not rel then
         notify("Open a file of the project first")
-        return
+        return nil
     end
     local categories = require("categories")
     local listed = vim.system(categories.files_command({ category = "all", hidden = true }), { cwd = root, text = true }):wait(10000)
-    local paths = vim.split(listed.stdout or "", "\n", { trimempty = true })
+    return rel, vim.split(listed.stdout or "", "\n", { trimempty = true })
+end
+
+function M.pick(root)
+    local rel, paths = current_and_paths(root)
+    if not rel then
+        return
+    end
     local lines, domain, in_folders, same_name = M.lines(root, rel, paths)
     if #lines == 0 then
         notify(string.format("Nothing else about %s", domain))
@@ -121,7 +136,7 @@ function M.pick(root)
     end
     fzf.fzf_exec(lines, {
         cwd = root,
-        prompt = "Related> ",
+        prompt = require("picker_mode").prompt("Related"),
         previewer = "builtin",
         file_icons = false,
         git_icons = false,

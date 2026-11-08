@@ -182,7 +182,7 @@ function M.pick(root)
     end
     fzf.fzf_exec("cat " .. vim.fn.shellescape(listing), {
         cwd = root,
-        prompt = "Pinned> ",
+        prompt = require("picker_mode").prompt("Pinned"),
         previewer = "builtin",
         file_icons = false,
         git_icons = false,
