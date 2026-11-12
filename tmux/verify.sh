@@ -56,6 +56,17 @@ keys="$(tmux -L "$socket" list-keys -T prefix)"
 [[ "$keys" == *" G "*gitview* ]] || { echo "prefix G is not bound to gitview" >&2; exit 1; }
 hooks="$(tmux -L "$socket" show-hooks -g | grep -c 'dev -s -q')"
 [[ "$hooks" -ge 12 ]] || { echo "snapshot hooks: $hooks" >&2; exit 1; }
+# The Russian layout: the same key, the same command (tmux/ru-keys runs
+# from tmux.conf through run-shell, so give it a moment).
+for _ in 1 2 3 4 5 6 7 8 9 10; do tmux -L "$socket" list-keys -T prefix ы 2>/dev/null | grep -q . && break; sleep 0.3; done
+for key in ы а п ш е; do   # s f g i t
+  [[ "$(tmux -L "$socket" list-keys -T prefix "$key" 2>/dev/null)" == *"-T prefix $key "* ]] || { echo "no prefix $key" >&2; exit 1; }
+done
+[[ "$(tmux -L "$socket" list-keys -T prefix ы)" == *choose-tree* ]] || { echo "prefix ы is not the tree" >&2; exit 1; }
+[[ "$(tmux -L "$socket" list-keys -T prefix п)" == *lazygit* ]] || { echo "prefix п is not lazygit" >&2; exit 1; }
+[[ "$(tmux -L "$socket" list-keys -T copy-mode-vi н)" == *copy-pipe* ]] || { echo "copy mode: н is not y" >&2; exit 1; }
+# In the root table only Alt-letter: a plain letter there is typing.
+if tmux -L "$socket" list-keys -T root ы 2>/dev/null | grep -q .; then echo "a plain letter is bound in the root table" >&2; exit 1; fi
 tmux -L "$socket" kill-server
 echo "TMUX_CONF_OK"
 
@@ -251,6 +262,16 @@ has "the command is typed, not run" "$pane" "grpcurl -plaintext -d '{\"user_id\"
 "$docs" --open rpc api/order/v1/order.proto OrderService GetOrder
 same "the same window again" "$(tmux list-windows -t shop -F '#W' | tr '\n' ' ')" "editor rpc "
 tmux kill-server
+# Enter on a document (two arguments, not the four of an rpc): the file in
+# a read-only nvim. (Under no_unset the missing $4 and $5 once stopped the
+# script and Enter did nothing.)
+mkdir -p "$work/stub"
+printf '#!/bin/sh\nprintf "%%s\\n" "$@" > "%s/nvim.args"\n' "$work" > "$work/stub/nvim"
+chmod +x "$work/stub/nvim"
+echo '# shop' > "$drepo/README.md"
+PATH="$work/stub:$PATH" "$docs" --open md README.md
+has "a document opens for reading" "$(tr '\n' ' ' < "$work/nvim.args")" "-R "
+has "the document itself" "$(tail -n 1 "$work/nvim.args")" "README.md"
 cd "$work"
 echo "DOCS_OK"
 

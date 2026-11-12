@@ -1,5 +1,9 @@
 {
   "plugins": {
+    "ascii-mermaid": {
+      "rev": "a91a0c7baec6392212c59221bc67389bb617feb7",
+      "src": "https://github.com/kais-radwan/ascii-mermaid"
+    },
     "bufferline.nvim": {
       "rev": "655133c3b4c3e5e05ec549b9f8cc2894ac6f51b3",
       "src": "https://github.com/akinsho/bufferline.nvim"

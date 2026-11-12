@@ -327,7 +327,8 @@ assert(conform.formatters_by_ft.lua == nil, "Lua is not formatted")
 assert(not vim.o.statusline:find("%%f") and not vim.o.statusline:find("%%F") and vim.o.statusline:find("%l", 1, true)
     and vim.o.winborder == "rounded", "the status line without the file name, rounded floating windows")
 local signs = vim.diagnostic.config().signs.text
-assert(signs[vim.diagnostic.severity.ERROR] == "" and signs[vim.diagnostic.severity.HINT] == "", "diagnostic glyphs")
+assert(signs[vim.diagnostic.severity.ERROR] == "\u{f057}" and signs[vim.diagnostic.severity.HINT] == "\u{f0eb}",
+    "diagnostic glyphs: nf-fa times-circle and lightbulb, not empty strings")
 local wk_ok = pcall(require("which-key").add, { { "<leader>z", group = "probe" } })
 assert(wk_ok, "which-key accepts a group")
 print("INIT_ICONS_OK")

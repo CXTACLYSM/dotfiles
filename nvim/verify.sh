@@ -64,7 +64,7 @@ step "Pure Lua regressions"
 for name in pairs_smoke go_lsp_smoke go_returns_smoke go_tasks_smoke \
   completion_retrigger_smoke big_file_smoke go_debug_smoke change_tree_render \
   repos_grep_smoke json_log_smoke proto_diff_smoke rpc_owner_smoke err_flow_smoke \
-  picker_mode_smoke
+  picker_mode_smoke external_changes_smoke
 do
   env "${nvim_env[@]}" NVIM_CONFIG_LUA="$config_dir/lua" \
     nvim --clean --headless -i NONE -l "$tests/$name.lua"

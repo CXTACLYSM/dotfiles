@@ -111,12 +111,16 @@ vim.diagnostic.config({
         prefix = "●",
     },
     virtual_lines = false,
+    -- Nerd Font glyphs (nf-fa: times-circle, warning, info-circle,
+    -- lightbulb). Written as \u{…} escapes: characters of the Private Use
+    -- Area are easily lost from a source file on the way through editors
+    -- and tools, and an empty text here means no sign at all.
     signs = {
         text = {
-            [vim.diagnostic.severity.ERROR] = "",
-            [vim.diagnostic.severity.WARN] = "",
-            [vim.diagnostic.severity.INFO] = "",
-            [vim.diagnostic.severity.HINT] = "",
+            [vim.diagnostic.severity.ERROR] = "\u{f057}",
+            [vim.diagnostic.severity.WARN] = "\u{f071}",
+            [vim.diagnostic.severity.INFO] = "\u{f05a}",
+            [vim.diagnostic.severity.HINT] = "\u{f0eb}",
         },
     },
     underline = true,
@@ -149,6 +153,10 @@ vim.pack.add({
     "https://github.com/mfussenegger/nvim-dap",
     -- Markdown drawn for reading: headings, code blocks, tables, lists.
     "https://github.com/MeanderingProgrammer/render-markdown.nvim",
+    -- The engine that draws a ```mermaid block as a box diagram: a bundled
+    -- TypeScript script run by node, no browser and no network. The placing
+    -- in the buffer is lua/markdown_diagrams.lua.
+    "https://github.com/kais-radwan/ascii-mermaid",
     -- File icons by name and extension (Nerd Font glyphs): the file tree,
     -- Space f and the other fzf-lua pickers draw them.
     "https://github.com/nvim-tree/nvim-web-devicons",
@@ -294,6 +302,14 @@ map("n", "<leader>e", "<cmd>Neotree toggle reveal left<CR>", {
 -- Tabs of open buffers (bufferline)
 -- ============================================================
 
+-- A file changed on disk by the agent (or git, or a generator) is read
+-- again within a second when the buffer has no unsaved changes; the lines
+-- that came changed are highlighted for a few seconds. A buffer with
+-- unsaved changes is never touched: a warning and a mark
+-- (vim.b.disk_conflict) instead of a question in the middle of typing
+-- (lua/external_changes.lua).
+require("external_changes").setup()
+
 -- The open files as tabs at the top, with their icons, a dot when not
 -- saved and the count of errors; the panel pushes them right. ]b / [b
 -- go to the next and previous tab, Space x closes the buffer, Space X
@@ -303,7 +319,7 @@ require("bufferline").setup({
         mode = "buffers",
         diagnostics = "nvim_lsp",
         diagnostics_indicator = function(count, level)
-            return (level:match("error") and " " or " ") .. count
+            return (level:match("error") and "\u{f057} " or "\u{f071} ") .. count
         end,
         show_buffer_close_icons = false,
         show_close_icon = false,
@@ -1418,8 +1434,9 @@ go_tasks.setup({
 -- Markdown
 -- ============================================================
 
--- README, docs and LSP hover drawn for reading (lua/markdown_view.lua);
--- Space m shows the raw text of the buffer and back.
+-- README, docs and LSP hover drawn for reading, mermaid diagrams drawn as
+-- box art over their blocks (lua/markdown_view.lua); Space m shows the raw
+-- text of the buffer and back.
 local markdown_view = require("markdown_view")
 
 markdown_view.setup()

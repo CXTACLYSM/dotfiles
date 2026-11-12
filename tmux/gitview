@@ -2,6 +2,8 @@
 # Изменения и история git — prefix G во всплывающем окне tmux на весь экран,
 # только просмотр: stage, commit и прочие действия остаются в CLI и lazygit
 # (prefix g). Слева список, справа превью через delta или difftastic.
+# В окне уже 100 колонок превью уходит под список (порог fzf считается по
+# ширине самого превью: 62% от 100).
 #
 # Режимы (Alt-c, по кругу):
 #   changes   рабочее дерево к HEAD; две колонки статуса как у
@@ -207,11 +209,13 @@ cd $root || exit 1
 mode=changes renderer=delta
 [[ -z $(git status --porcelain --untracked-files=all 2>/dev/null) ]] && mode=log
 
-list $mode | fzf --ansi --delimiter=$tab --with-nth=2 --layout=reverse --no-sort --tiebreak=index \
+# --height=100%: серверу tmux достаётся FZF_DEFAULT_OPTS из zshrc (--height
+# 50% для Ctrl-R в шелле), а этому списку нужен весь popup.
+list $mode | fzf --ansi --delimiter=$tab --with-nth=2 --height=100% --layout=reverse --no-sort --tiebreak=index \
   --prompt="$(prompt_of $mode $renderer)" \
   --header='Alt-c — режим · Alt-k — рендерер · Enter — целиком (q — назад) · Esc — закрыть' \
   --preview="${(q)self} --preview {1} {3}" \
-  --preview-window='right,62%,border-left,<100(down,60%,border-top)' \
+  --preview-window='right,62%,border-left,<62(down,60%,border-top)' \
   --bind="alt-c:transform:${(q)self} --cycle mode" \
   --bind="alt-k:transform:${(q)self} --cycle renderer" \
   --bind="enter:execute(${(q)self} --open {1} {3})" \

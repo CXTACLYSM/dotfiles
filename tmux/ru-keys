@@ -1,0 +1,66 @@
+#!/bin/zsh
+# Привязки tmux на русской раскладке. Раскладка осталась русской после
+# вопроса агенту — и prefix s приходит как prefix ы, Alt-g как Alt-п. Скрипт
+# повторяет каждую привязку, клавиша которой — латинская буква или знак
+# буквенной клавиши, на букве той же клавиши в ЙЦУКЕН: в таблицах prefix,
+# root (Alt-буква) и copy-mode-vi. Команда привязки берётся как есть из
+# `tmux list-keys`, так что свои привязки повторяются тоже; после их
+# изменения — перечитать конфиг (prefix r).
+#
+# Клавиши внутри режимов самого tmux (j / k в дереве prefix s) таблицами не
+# задаются: там в русской раскладке работают стрелки и Enter.
+#
+#   ru-keys          добавить привязки на сервере tmux
+#   ru-keys --list   напечатать их, не добавляя (для проверок)
+
+emulate -L zsh
+setopt extended_glob
+path=(/opt/homebrew/bin /usr/local/bin $path)   # run-shell — в окружении сервера tmux
+typeset -U path
+
+# Буквенные клавиши QWERTY и их буквы в ЙЦУКЕН. Знаки, которые в русской
+# раскладке Mac и PC стоят по-разному (цифровой ряд, / и \), не трогаются.
+typeset -A ru
+ru=(
+  q й w ц e у r к t е y н u г i ш o щ p з '[' х ']' ъ
+  a ф s ы d в f а g п h р j о k л l д ';' ж "'" э
+  z я x ч c с v м b и n т m ь ',' б '.' ю
+  Q Й W Ц E У R К T Е Y Н U Г I Ш O Щ P З '{' Х '}' Ъ
+  A Ф S Ы D В F А G П H Р J О K Л L Д ':' Ж '"' Э
+  Z Я X Ч C С V М B И N Т M Ь '<' Б '>' Ю
+)
+
+# Строка `bind-key [-r] -T таблица клавиша команда…` — та же привязка на
+# русской букве, или ничего, если клавиша не буквенная.
+translate() {
+  local line=$1 head key rest plain prefix=
+  [[ $line =~ '^(bind-key +(-r +)?-T +[^ ]+ +)([^ ]+)( +.*)$' ]] || return 0
+  head=$match[1] key=$match[3] rest=$match[4]
+  plain=$key
+  # list-keys печатает знаки как \; и "M-;": снять кавычки и обратную черту.
+  [[ $plain == \"*\" ]] && plain=${plain[2,-2]}
+  [[ $plain == M-* ]] && prefix=M- plain=${plain#M-}
+  [[ $plain == \\? ]] && plain=${plain[2]}
+  (( ${#plain} == 1 && ${+ru[$plain]} )) || return 0
+  print -r -- "$head$prefix$ru[$plain]$rest"
+}
+
+lines=()
+for table in prefix root copy-mode-vi; do
+  for line in ${(f)"$(tmux list-keys -T $table 2>/dev/null)"}; do
+    # В root — только Alt-буква: сама буква — это набор текста.
+    [[ $table == root && $line != *' -T root '(\"|)M-* ]] && continue
+    new=$(translate $line)
+    [[ -n $new ]] && lines+=$new
+  done
+done
+
+if [[ ${1:-} == --list ]]; then
+  print -rl -- $lines
+  exit 0
+fi
+(( $#lines )) || exit 0
+tmp=$(mktemp ${TMPDIR:-/tmp}/ru-keys.XXXXXX) || exit 0
+print -rl -- $lines > $tmp
+tmux source-file $tmp 2>/dev/null
+rm -f $tmp

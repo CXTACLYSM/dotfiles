@@ -197,7 +197,9 @@ open_doc() {
 
 case ${1-} in
   --preview) preview $2 $3 $4 $5; exit ;;
-  --open) open_doc $2 $3 $4 $5; exit ;;
+  # (У документа аргументов два, у rpc — четыре; с no_unset пропущенные
+  # обращения к $4 и $5 обрывали скрипт, и Enter на документе молчал.)
+  --open) open_doc $2 $3 ${4-} ${5-}; exit ;;
   --copy) request_command $3 $4 $5 | ${=DOCS_CLIPBOARD:-pbcopy}; exit ;;
   --list) list_only=1; shift ;;
 esac
@@ -212,7 +214,9 @@ fi
 
 # Enter по rpc заменяет fzf командой (become): попап закрывается, окно rpc
 # остаётся на экране; остальное открывается внутри попапа (execute).
-entries </dev/null | fzf --ansi --delimiter=$'\t' --with-nth=1,2 --tiebreak=index --layout=reverse \
+# --height=100%: серверу tmux достаётся FZF_DEFAULT_OPTS из zshrc (--height
+# 50% для Ctrl-R в шелле), а этому списку нужен весь popup.
+entries </dev/null | fzf --ansi --delimiter=$'\t' --with-nth=1,2 --tiebreak=index --height=100% --layout=reverse \
   --prompt="${root:t} › " \
   --header='Enter — читать целиком (q — назад), у rpc — набрать запрос в окно rpc · Ctrl-y — скопировать запрос · Esc — закрыть' \
   --preview="${(q)self} --preview {3} {4} {5} {6}" \

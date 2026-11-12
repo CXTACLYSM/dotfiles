@@ -41,6 +41,8 @@ local modules = {
     "change_tree.go_index",
     "change_tree.semantic_graph",
     "change_tree",
+    "external_changes",
+    "markdown_diagrams",
 }
 for _, name in ipairs(modules) do
     assert(require(name), name)

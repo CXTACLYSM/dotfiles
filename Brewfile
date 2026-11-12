@@ -17,6 +17,7 @@ brew "go"
 brew "gopls"
 brew "gofumpt" # форматирование Go при сохранении (conform.nvim)
 brew "delve"
+brew "node" # движок диаграмм mermaid в markdown (ascii-mermaid) — локальный скрипт, без npm
 
 # git
 brew "git-delta"

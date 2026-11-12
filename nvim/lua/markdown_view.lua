@@ -3,6 +3,12 @@
 -- and Insert mode show the raw markdown; a read-only `nvim -R` (the tmux
 -- documentation popup) keeps every line drawn. Space m switches the buffer
 -- between drawn and raw.
+--
+-- A ```mermaid block is drawn as a box diagram over its source
+-- (lua/markdown_diagrams.lua on the engine of ascii-mermaid: flowcharts,
+-- sequence, state, class and ER diagrams, gantt, pie, timeline). The
+-- cursor in a block reveals its source; `nvim -R` never does. Space m
+-- clears the diagrams with the rest of the drawing.
 
 local M = {}
 
@@ -67,13 +73,33 @@ function M.config(reader)
     })
 end
 
+M.diagrams = false
+
 function M.setup()
-    -- `nvim -R` is for reading: no raw cursor line there.
-    require("render-markdown").setup(M.config(vim.tbl_contains(vim.v.argv, "-R")))
+    -- `nvim -R` is for reading: no raw cursor line there, and a diagram
+    -- never gives way to its source.
+    local reader = vim.tbl_contains(vim.v.argv, "-R")
+    require("render-markdown").setup(M.config(reader))
+    local diagrams = require("markdown_diagrams")
+    if diagrams.available() then
+        diagrams.setup({ reader = reader })
+        M.diagrams = true
+    end
 end
 
 function M.toggle()
     require("render-markdown").buf_toggle()
+    local buf = vim.api.nvim_get_current_buf()
+    vim.b[buf].markdown_raw = not vim.b[buf].markdown_raw
+    if not M.diagrams then
+        return
+    end
+    local diagrams = require("markdown_diagrams")
+    if vim.b[buf].markdown_raw then
+        diagrams.hide(buf)
+    else
+        diagrams.show(buf)
+    end
 end
 
 return M

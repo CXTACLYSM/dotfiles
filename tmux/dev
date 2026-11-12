@@ -646,7 +646,9 @@ if [[ -n $branch ]]; then
   root=$(find_root $PWD)
   top=$(git -C $root rev-parse --show-toplevel 2>/dev/null) || die '-b: не git-репозиторий'
   main=${$(git -C $root rev-parse --path-format=absolute --git-common-dir):h}
-  rel=${root#$top}   # проект может лежать в подкаталоге репозитория
+  # Проект может лежать в подкаталоге репозитория. git отдаёт физический
+  # путь (/private/var …), а $PWD может быть символической ссылкой: :A.
+  rel=${${root:A}#$top}
   wt=$(git -C $main worktree list --porcelain |
     awk -v b="refs/heads/$branch" '/^worktree /{p = substr($0, 10)} $0 == "branch " b {print p}')
   if [[ -z $wt ]]; then

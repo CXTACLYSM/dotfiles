@@ -79,7 +79,9 @@ case ${1:-} in
   --kill)    [[ $2 == session ]] && tmux kill-session -t "=$3"; exit 0 ;;
 esac
 
-choice=$(list | fzf --delimiter $tab --with-nth 2 --reverse --tiebreak index \
+# --height=100%: серверу tmux достаётся FZF_DEFAULT_OPTS из zshrc (--height
+# 50% для Ctrl-R в шелле), а этому списку нужен весь popup.
+choice=$(list | fzf --delimiter $tab --with-nth 2 --height=100% --reverse --tiebreak index \
   --prompt 'проект › ' --header 'Enter — перейти (○ — восстановить из снимка) · Ctrl-X — закрыть сессию' \
   --preview "$self --preview {1} {3}" --preview-window right,55% \
   --bind "ctrl-x:execute-silent($self --kill {1} {3})+reload($self --list)") || exit 0
