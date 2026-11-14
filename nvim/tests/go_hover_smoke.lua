@@ -119,6 +119,38 @@ assert(vim.wait(10000, function()
 end, 20), "K opened no float")
 local shown = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(float), 0, -1, false), "\n")
 assert(shown:find("type Customer struct", 1, true), "float shows the struct: " .. shown)
+-- The float is wide enough for the drawing of render-markdown (code blocks
+-- padded and at least 60 wide) and wraps what is wider than the screen.
+vim.wait(300, function()
+    return false
+end)
+local float_buf = vim.api.nvim_win_get_buf(float)
+local width = vim.api.nvim_win_get_config(float).width
+local render_ns = vim.api.nvim_get_namespaces()["render-markdown.nvim"]
+local drawn_to = 0
+for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(float_buf, render_ns, 0, -1, { details = true })) do
+    local details = mark[4]
+    if details.virt_text and (details.virt_text_pos == "overlay" or details.virt_text_pos == "inline") then
+        local w = 0
+        for _, chunk in ipairs(details.virt_text) do
+            w = w + vim.fn.strdisplaywidth(chunk[1])
+        end
+        drawn_to = math.max(drawn_to, mark[3] + w)
+    end
+end
+assert(width >= 64 and width >= drawn_to, string.format("the float (%d) is narrower than its drawing (%d)", width, drawn_to))
+-- render-markdown turns wrap off once the raw lines fit the float; a line
+-- wider than the float keeps it on.
+local longest = 0
+for _, line in ipairs(vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)) do
+    longest = math.max(longest, vim.fn.strdisplaywidth(line))
+end
+assert(vim.wo[float].wrap == (longest > width), string.format("wrap %s with the longest line %d in a float of %d",
+    tostring(vim.wo[float].wrap), longest, width))
+assert(vim.api.nvim_win_get_height(float) >= math.min(vim.api.nvim_win_text_height(float, {}).all, math.floor(vim.o.lines * 0.7)),
+    "the float shows all its rows")
+assert(go_hover.float_width({ "short" }) == 64 and go_hover.float_width({ string.rep("x", 100) }) == math.min(104, vim.o.columns - 4),
+    "width: at least a code block, else the longest line and the pads")
 k.callback()
 assert(vim.api.nvim_get_current_win() == float, "K again focuses the float")
 vim.cmd("wincmd p")

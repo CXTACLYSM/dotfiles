@@ -363,11 +363,34 @@ function M.contents(client, win, done)
     end, bufnr)
 end
 
+-- The float sized for the drawing, not for the raw text: render-markdown
+-- pads a code block by two columns on each side and draws it at least 60
+-- wide, so a float as wide as its longest line cut the right edge of every
+-- block. A line wider than the screen wraps instead of being cut.
+function M.float_width(lines)
+    local longest = 0
+    for _, line in ipairs(lines) do
+        longest = math.max(longest, vim.fn.strdisplaywidth(line))
+    end
+    return math.min(math.max(longest + 4, 64), math.max(vim.o.columns - 4, 20))
+end
+
 local function show(bufnr, client, lines, hover)
+    local max_height = math.max(10, math.floor(vim.o.lines * 0.7))
     local _, winid = vim.lsp.util.open_floating_preview(lines, "markdown", {
         focus_id = focus_id,
-        max_height = math.max(10, math.floor(vim.o.lines * 0.7)),
+        wrap = true,
+        width = M.float_width(lines),
+        max_height = max_height,
     })
+    -- Once drawn, the height follows what is shown: the concealed fences
+    -- take no rows, a wrapped line takes several.
+    vim.schedule(function()
+        if vim.api.nvim_win_is_valid(winid) then
+            local shown = vim.api.nvim_win_text_height(winid, {}).all
+            vim.api.nvim_win_set_height(winid, math.max(1, math.min(shown, max_height)))
+        end
+    end)
     -- The hovered name stays marked while the float is open, as with the
     -- native K.
     local range = hover.range

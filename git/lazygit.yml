@@ -1,6 +1,35 @@
 # lazygit — prefix g в tmux (tmux/tmux.conf). install.sh ставит симлинк:
 #   ~/Library/Application Support/lazygit/config.yml → этот файл
 
+gui:
+  # Палитра catppuccin mocha, как в nvim, tmux и delta: рамка активной
+  # панели синяя (как у активной панели tmux), остальные тихие; выбранная
+  # строка — полосой, как строка курсора в nvim.
+  theme:
+    activeBorderColor: ["#89b4fa", bold]
+    inactiveBorderColor: ["#45475a"]
+    searchingActiveBorderColor: ["#f9e2af", bold]
+    optionsTextColor: ["#89b4fa"]
+    selectedLineBgColor: ["#313244"]
+    inactiveViewSelectedLineBgColor: ["#28293a"]
+    cherryPickedCommitFgColor: ["#1e1e2e"]
+    cherryPickedCommitBgColor: ["#94e2d5"]
+    markedBaseCommitFgColor: ["#1e1e2e"]
+    markedBaseCommitBgColor: ["#f9e2af"]
+    unstagedChangesColor: ["#f38ba8"]
+    defaultFgColor: ["#cdd6f4"]
+    authorColors:
+      "*": "#b4befe"
+  # Скруглённые рамки, как у всплывающих окон tmux и nvim.
+  border: rounded
+  # Значки файлов — из шрифта профиля iTerm (JetBrainsMono Nerd Font), те
+  # же, что в дереве файлов nvim.
+  nerdFontsVersion: "3"
+  # Окно открывается сразу списком файлов: без панели журнала команд со
+  # случайным советом (@ показывает журнал, когда он нужен).
+  showCommandLog: false
+  showRandomTip: false
+
 git:
   # Diff в lazygit — через delta, как и `git diff` в шелле (тема и номера
   # строк — из [delta] в ~/.gitconfig). Клавиша | переключает рендерер:
