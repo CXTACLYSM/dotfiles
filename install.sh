@@ -7,11 +7,13 @@
 #   ./install.sh --dry-run      показать, что будет сделано, ничего не меняя
 #   ./install.sh --check        только проверить состояние
 #   ./install.sh --no-brew      без brew bundle (пакеты уже стоят)
-#   ./install.sh --skip-verify  без прогона nvim/verify.sh и tmux/verify.sh (1–2 минуты)
+#   ./install.sh --skip-verify  без прогона go/, nvim/ и tmux/verify.sh (1–2 минуты)
 #
 # Шаги:
 #   brew    пакеты из Brewfile
 #   privacy статистика Homebrew и телеметрия Go выключаются
+#   go      gopls, gofumpt, dlv под go из PATH: из Homebrew, если go оттуда,
+#           иначе собираются этим go (go/go-tools → ~/.config/dotfiles-local/go-tools.env)
 #   anchor  ~/.config/dotfiles → этот репозиторий (через него ссылаются конфиги)
 #   zsh     строка `source …/zsh/zshrc.zsh` в конце ~/.zshrc
 #   tmux    строка `source-file …/tmux/tmux.conf` в ~/.tmux.conf;
@@ -215,6 +217,36 @@ fi
 # ============================================================
 # Конфиги
 # ============================================================
+
+# ============================================================
+# Инструменты Go
+# ============================================================
+
+# gopls запускает go из PATH, dlv отлаживает собранное им. Если это go не из
+# Homebrew (корпоративный образ, пакет с go.dev, goenv), инструменты из
+# Brewfile собраны другим Go и могут с ним не работать: go/go-tools собирает
+# их этим же go и пишет пути в ~/.config/dotfiles-local/go-tools.env, откуда
+# их берёт nvim. С go из Homebrew файл просто называет инструменты brew.
+section "go"
+if (( $+commands[go] )); then
+  case $mode in
+    check)   $repo/go/go-tools --check || failures+=1 ;;
+    dry-run) $repo/go/go-tools --dry-run ;;
+    *)
+      act "инструменты Go под go из PATH (go/go-tools)" $repo/go/go-tools
+      if (( verify_step )); then
+        go_verify_log=$HOME/.local/state/dotfiles/go-verify.log
+        mkdir -p ${go_verify_log:h}
+        act "проверки go (go/verify.sh, лог: $(short $go_verify_log))" \
+          zsh -c "${(q)repo}/go/verify.sh > ${(q)go_verify_log} 2>&1"
+      else
+        info "go/verify.sh пропущен (--skip-verify)"
+      fi
+      ;;
+  esac
+else
+  info "нет команды go — шаг пропущен"
+fi
 
 section "anchor"
 if [[ ${anchor:A} == ${repo:A} && ! -L $anchor ]]; then

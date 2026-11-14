@@ -34,6 +34,7 @@ exec zsh
 | `tmux/tmux.conf` | строка `source-file ~/.config/dotfiles/tmux/tmux.conf` в `~/.tmux.conf` |
 | `tmux/dev`, `devlog`, `projects` | ссылки в `~/.local/bin` |
 | `tmux/ru-keys` | вызывается из `tmux.conf` по пути `~/.config/dotfiles/tmux/ru-keys` |
+| `go/go-tools` | запускается из `install.sh`; пишет `~/.config/dotfiles-local/go-tools.env` — пути gopls, gofumpt, dlv под go из `PATH`; собранные им инструменты — в `~/.local/share/dotfiles/go-tools/bin` |
 | `git/gitconfig` | `include.path` в `~/.gitconfig` |
 | `git/lazygit.yml` | ссылка `~/Library/Application Support/lazygit/config.yml` |
 | `iterm/go-backend.json` | копия в `~/Library/Application Support/iTerm2/DynamicProfiles/` |
@@ -46,6 +47,9 @@ exec zsh
 ## Что скачивается из сети
 
 - пакеты Homebrew из `Brewfile`;
+- если `go` в `PATH` не из Homebrew — `go install` gopls, gofumpt и dlv
+  этим go через `GOPROXY`, `GOPRIVATE` и `GONOSUMDB` машины, как они
+  заданы (ниже, «Корпоративный Go»);
 - 18 плагинов Neovim — `git clone` с GitHub строго по коммитам из
   `nvim/nvim-pack-lock.json`; движок диаграмм mermaid лежит в плагине
   ascii-mermaid собранным скриптом, `npm` не запускается;
@@ -69,8 +73,36 @@ AST-хелпер дерева правок собирается локально
   оставаться последней: внутри неё в самом конце подключается
   zsh-syntax-highlighting.
 - `~/.gitconfig`: `user.name`, `user.email`.
+- `~/.config/dotfiles-local/go-tools.env` пишет `install.sh`, руками не
+  правится: какой `go` первый в `PATH` и какими gopls, gofumpt и dlv
+  пользоваться (ниже, «Корпоративный Go»).
 - `~/.config/dev/<проект>.zsh` — раскладки `dev` для своих проектов;
   `~/.config/dev/sets/<набор>` — наборы проектов для `dev -w`.
+
+## Корпоративный Go
+
+gopls запускает `go` из `PATH` и загружает проект им; dlv отлаживает
+собранное им. Инструменты из `Brewfile` собраны Go из Homebrew, и с go,
+который стоит на машине отдельно (корпоративный образ, пакет с go.dev в
+`/usr/local/go`, goenv) и отстаёт больше чем на три релиза, gopls не
+загружает ни одного пакета и молча отвечает пустотой. Поэтому `install.sh`
+сначала смотрит, какой `go` первый в `PATH`, и только потом ставит
+зависимое (`go/go-tools`):
+
+- go из Homebrew — инструменты из `Brewfile`, собраны тем же Go;
+- любой другой — каждый инструмент собирается этим go: `go install`
+  самой новой версии, чей `go.mod` не требует Go новее установленного
+  (поле `GoVersion` у `go list -m -json`), в
+  `~/.local/share/dotfiles/go-tools/bin`. Сеть — через `GOPROXY`,
+  `GOPRIVATE` и `GONOSUMDB` машины без изменений; на время команды только
+  `GOTOOLCHAIN=local`, чтобы go не подменял toolchain, и пустой `GOFLAGS`.
+
+Выбор пишется в `~/.config/dotfiles-local/go-tools.env`; nvim берёт пути
+оттуда (`nvim/lua/go_tools.lua`), так что порядок `PATH` и brew-версии ни
+на что не влияют. Повторный `install.sh` ничего не пересобирает, пока
+бинарник собран тем же go; после обновления go инструменты собираются
+заново. `install.sh --check` показывает go, его происхождение и каким Go
+собран каждый инструмент.
 
 ## Вручную после установки
 
@@ -674,4 +706,5 @@ grpcurl -plaintext -d '{"user_id": 0, "items": [{"sku": "", "count": 0}]}' local
 ```sh
 nvim/verify.sh     # синтаксис, Lua-тесты (в том числе правки снаружи), хелпер, плагины, gopls на фикстурах, markdown с диаграммой mermaid, дерево правок, категории поиска, прыжки по дереву, режим пикеров в настоящем fzf
 tmux/verify.sh     # tmux.conf (клавиши, хуки, русская раскладка), сегмент git статус-бара, prefix G, запросы rpc в prefix i, dev -w / -s / -r — на временных репозиториях и своём сервере tmux
+go/verify.sh       # go/go-tools: go из Homebrew и чужой go (копия GOROOT, GOPROXY на каталог с модулем в трёх версиях) — выбор версии, сборка, файл для nvim, повтор без пересборки
 ```

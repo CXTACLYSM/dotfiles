@@ -1,0 +1,257 @@
+#!/bin/zsh
+# Инструменты Go под установленный go: gopls, gofumpt, dlv.
+#
+# Сначала определяется go, который первый в PATH: его и запускает gopls
+# при работе, им собираются и отлаживаются проекты. Дальше два случая.
+#
+#   go из Homebrew   инструменты тоже из Homebrew (Brewfile): собраны тем
+#                    же свежим Go, обновляются вместе с ним.
+#   go другой        корпоративный образ, пакет с go.dev в /usr/local/go,
+#                    goenv: инструменты собираются этим же go командой
+#                    `go install` в ~/.local/share/dotfiles/go-tools/bin.
+#                    Версия каждого — самая новая, чей go.mod не требует
+#                    Go новее установленного (поле GoVersion у
+#                    `go list -m -json`). Сеть — через GOPROXY, GOPRIVATE и
+#                    GONOSUMDB машины, как есть; меняются только
+#                    GOTOOLCHAIN=local (go не подменяет toolchain) и
+#                    GOFLAGS= (чужой -mod=vendor не ломает сборку).
+#
+# Выбранные пути пишутся в ~/.config/dotfiles-local/go-tools.env; nvim берёт
+# их оттуда (lua/go_tools.lua) и не зависит от порядка PATH. Повторный
+# запуск ничего не пересобирает, пока бинарник собран тем же go; после
+# обновления go инструменты собираются заново.
+#
+#   go-tools              поставить или обновить; зовёт install.sh
+#   go-tools --check      только состояние (✓ / ✗), код выхода 1 при ✗
+#   go-tools --dry-run    что было бы сделано
+#
+# Для проверок (go/verify.sh): GO_TOOLS_FILE, GO_TOOLS_DIR,
+# GO_TOOLS_BREW_PREFIX и GO_TOOLS_SPEC («имя модуль пакет» по строке).
+
+emulate -L zsh
+setopt pipe_fail extended_glob
+autoload -Uz is-at-least
+
+mode=install
+case ${1:-} in
+  --check)   mode=check ;;
+  --dry-run) mode=dry-run ;;
+  '')        ;;
+  -h|--help) sed -n '2,/^$/s/^# \{0,1\}//p' $0; exit 0 ;;
+  *)         print -u2 -r -- "go-tools: неизвестный флаг $1 (--help)"; exit 2 ;;
+esac
+
+config_home=${XDG_CONFIG_HOME:-$HOME/.config}
+data_home=${XDG_DATA_HOME:-$HOME/.local/share}
+file=${GO_TOOLS_FILE:-$config_home/dotfiles-local/go-tools.env}
+dir=${GO_TOOLS_DIR:-$data_home/dotfiles/go-tools}
+brew_prefix=${GO_TOOLS_BREW_PREFIX-$(brew --prefix 2>/dev/null)}
+spec=${GO_TOOLS_SPEC:-"gopls golang.org/x/tools/gopls golang.org/x/tools/gopls
+gofumpt mvdan.cc/gofumpt mvdan.cc/gofumpt
+dlv github.com/go-delve/delve github.com/go-delve/delve/cmd/dlv"}
+
+typeset -i failures=0
+ok()   { print -r -- $'  \e[32m✓\e[0m '"$1" }
+bad()  { print -r -- $'  \e[31m✗\e[0m '"$1"; failures+=1 }
+info() { print -r -- "  · $1" }
+short() { print -r -- ${1/#$HOME/~} }
+die()  { print -u2 -r -- $'\e[31mgo-tools:\e[0m '"$1"; exit 1 }
+
+# Команды go идут из каталога без go.mod: внутри модуля go.mod мог бы
+# попросить другой toolchain, а GOFLAGS и GOWORK машины здесь ни при чём.
+scratch=$(mktemp -d) || die "не создать временный каталог"
+trap 'rm -rf "$scratch"' EXIT
+g() { (cd $scratch && GOTOOLCHAIN=local GOFLAGS= GOWORK=off go "$@") }
+
+# ------------------------------------------------------------
+# Какой go
+# ------------------------------------------------------------
+
+go_bin=${commands[go]:-}
+if [[ -z $go_bin ]]; then
+  if [[ $mode == check ]]; then bad "нет команды go"; exit 1; fi
+  die "нет команды go в PATH"
+fi
+goroot=$(g env GOROOT) || die "go env GOROOT не отвечает: $go_bin"
+go_version=$(g env GOVERSION)
+have=${go_version#go}
+have_minor=${${have#1.}%%.*}
+
+if [[ -n $brew_prefix && ${goroot:A} == ${brew_prefix:A}/Cellar/go/* ]]; then
+  from=brew
+else
+  from=other
+fi
+
+# Минор Go, которым собран бинарник $1 («путь: go1.26.5» у go version -m).
+built_with() {
+  local line
+  line=$(g version -m $1 2>/dev/null | head -n 1) || return 1
+  line=${line##*: }
+  [[ $line == go1.* ]] || return 1
+  print -r -- ${line#go}
+}
+
+# ------------------------------------------------------------
+# Выбор версии для чужого go
+# ------------------------------------------------------------
+
+# Самая новая стабильная версия модуля $1, чей go.mod не требует Go новее
+# установленного. Смотрит не больше десяти последних: каждая — запрос к
+# прокси за .mod и .info, без скачивания архива.
+pick_version() {
+  local module=$1 json v need gomod tried=0
+  local -a versions
+  json=$(g list -m -versions -json $module 2>&1) || { print -u2 -r -- "$json"; return 1 }
+  versions=(${(f)"$(jq -r '.Versions[]? // empty' <<<$json)"})
+  (( $#versions )) || { print -u2 -r -- "у $module нет версий в GOPROXY"; return 1 }
+  for v in ${(Oa)versions}; do
+    [[ $v == *-* ]] && continue   # pre-release
+    (( tried++ >= 10 )) && break
+    # go list -m отдаёт путь к скачанному go.mod (поле GoVersion у версии,
+    # запрошенной явно, пустое); строка go читается из него. Без строки
+    # модуль собирается любым Go. Нет файла — запрос не удался, версия
+    # пропускается.
+    gomod=$(g list -m -json $module@$v 2>/dev/null | jq -r '.GoMod // empty')
+    [[ -n $gomod && -r $gomod ]] || continue
+    need=$(sed -n 's/^go[[:space:]]\{1,\}\([0-9][0-9.]*\).*/\1/p' $gomod | head -n 1)
+    if is-at-least ${need:-0} $have; then
+      print -r -- $v
+      return 0
+    fi
+  done
+  print -u2 -r -- "ни одна из последних версий $module не собирается go$have"
+  return 1
+}
+
+# ------------------------------------------------------------
+# Инструменты
+# ------------------------------------------------------------
+
+typeset -A chosen
+typeset -i changed=0
+
+# Поддерживаемый разрыв: gopls держит четыре последних релиза Go, delve —
+# два; бинарник, собранный Go новее установленного больше чем на три
+# минора, работать с ним не обязан.
+supported() {
+  local built=$1 built_minor
+  built_minor=${${built#1.}%%.*}
+  (( have_minor >= built_minor - 3 ))
+}
+
+tool_from_brew() {
+  local name=$1 bin built
+  bin=${commands[$name]:-}
+  if [[ -z $bin ]]; then
+    bad "$name: не установлен (brew bundle)"
+    return
+  fi
+  built=$(built_with $bin) || built=$have
+  if supported $built; then
+    [[ $mode == check ]] && ok "$name: $(short $bin), собран go$built"
+  else
+    bad "$name: $(short $bin) собран go$built, а go в PATH $have — обнови brew или убери старый go из PATH"
+  fi
+  chosen[$name]=$bin
+}
+
+tool_from_source() {
+  # (bin, not path: `path` is zsh's array tied to PATH.)
+  local name=$1 module=$2 pkg=$3 bin=$dir/bin/$1 built v
+  if [[ -x $bin ]] && built=$(built_with $bin) && [[ $built == $have ]]; then
+    [[ $mode == check ]] && ok "$name: $(short $bin), собран go$have"
+    chosen[$name]=$bin
+    return
+  fi
+  if [[ $mode == check ]]; then
+    if [[ -x $bin ]]; then
+      bad "$name: $(short $bin) собран go${built:-?}, а go в PATH $have — запусти install.sh"
+    else
+      bad "$name: не собран под go$have — запусти install.sh"
+    fi
+    chosen[$name]=${commands[$name]:-}
+    return
+  fi
+  if ! v=$(pick_version $module); then
+    bad "$name: не выбрать версию $module под go$have (GOPROXY $(g env GOPROXY))"
+    return
+  fi
+  if [[ $mode == dry-run ]]; then
+    print -r -- "  → (dry-run) go install $pkg@$v → $(short $bin)"
+    chosen[$name]=$bin
+    return
+  fi
+  print -r -- "  → go install $pkg@$v → $(short $bin)"
+  mkdir -p $dir/bin || die "не создать $dir/bin"
+  if ! (cd $scratch && GOTOOLCHAIN=local GOFLAGS= GOWORK=off GOBIN=$dir/bin go install $pkg@$v); then
+    bad "$name: go install $pkg@$v не удался"
+    return
+  fi
+  # go install называет бинарник по последнему элементу пути пакета.
+  if [[ ! -x $bin && -x $dir/bin/${pkg:t} ]]; then
+    mv $dir/bin/${pkg:t} $bin || die "не переименовать $dir/bin/${pkg:t}"
+  fi
+  [[ -x $bin ]] || { bad "$name: после go install нет $(short $bin)"; return }
+  chosen[$name]=$bin
+  changed=1
+}
+
+if [[ $from == brew ]]; then
+  [[ $mode == check ]] && ok "go $have из Homebrew: $(short $goroot); инструменты из Brewfile"
+  [[ $mode == install || $mode == dry-run ]] && info "go $have из Homebrew — инструменты из Brewfile"
+else
+  [[ $mode == check ]] && ok "go $have не из Homebrew: $(short $goroot); инструменты собираются им в $(short $dir/bin)"
+  [[ $mode == install || $mode == dry-run ]] && info "go $have не из Homebrew ($(short $goroot)) — инструменты собираются им"
+fi
+
+for line in ${(f)spec}; do
+  set -- ${=line}
+  if [[ $from == brew ]]; then
+    tool_from_brew $1
+  else
+    tool_from_source $1 $2 $3
+  fi
+done
+
+# ------------------------------------------------------------
+# Файл для nvim
+# ------------------------------------------------------------
+
+render() {
+  print -r -- "# Инструменты Go, выбранные install.sh под go в PATH (go/go-tools)."
+  print -r -- "# Не править руками: следующий install.sh перепишет."
+  print -r -- "GO=$go_bin"
+  print -r -- "GO_VERSION=$go_version"
+  print -r -- "GO_FROM=$from"
+  for line in ${(f)spec}; do
+    set -- ${=line}
+    [[ -n ${chosen[$1]:-} ]] && print -r -- "${(U)1}=${chosen[$1]}"
+  done
+}
+
+if [[ $mode == check ]]; then
+  if [[ -f $file ]] && [[ "$(render)" == "$(<$file)" ]]; then
+    ok "$(short $file) соответствует"
+  elif [[ -f $file ]]; then
+    bad "$(short $file) устарел — запусти install.sh"
+  else
+    bad "нет $(short $file) — запусти install.sh"
+  fi
+elif [[ $mode == dry-run ]]; then
+  if [[ -f $file ]] && [[ "$(render)" == "$(<$file)" ]]; then
+    info "$(short $file) без изменений"
+  else
+    print -r -- "  → (dry-run) записать $(short $file)"
+  fi
+elif (( failures == 0 )); then
+  if [[ -f $file ]] && [[ "$(render)" == "$(<$file)" ]]; then
+    info "$(short $file) без изменений"
+  else
+    mkdir -p ${file:h} || die "не создать ${file:h}"
+    render > $file || die "не записать $file"
+    print -r -- "  → записан $(short $file)"
+  fi
+fi
+
+(( failures == 0 ))

@@ -23,6 +23,7 @@ local modules = {
     "completion_retrigger",
     "big_file",
     "go_debug",
+    "go_tools",
     "go_rename",
     "go_alt",
     "todo",

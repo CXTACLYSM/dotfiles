@@ -323,6 +323,11 @@ assert(vim.fn.maparg("s", "x") ~= "" and vim.fn.maparg("r", "o") ~= "", "flash i
 local conform = require("conform")
 assert(vim.deep_equal(conform.formatters_by_ft.go, { "gofumpt" }), "gofumpt for Go")
 assert(conform.formatters_by_ft.lua == nil, "Lua is not formatted")
+-- The tools by the paths install.sh chose for the go in PATH.
+local go_tools = require("go_tools")
+assert(conform.formatters.gofumpt.command == go_tools.path("gofumpt"), "gofumpt by its path")
+assert(require("go_debug").opts.dlv == go_tools.path("dlv"), "dlv by its path")
+assert(vim.lsp.config.gopls.cmd[1] == go_tools.path("gopls"), "gopls by its path")
 -- The status line stays Neovim's own.
 assert(not vim.o.statusline:find("%%f") and not vim.o.statusline:find("%%F") and vim.o.statusline:find("%l", 1, true)
     and vim.o.winborder == "rounded", "the status line without the file name, rounded floating windows")

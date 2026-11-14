@@ -71,7 +71,10 @@ function M.config(opts)
     if remote == nil then
         remote = vim.env.NVIM_GOPLS_REMOTE ~= "0"
     end
-    local cmd = opts.cmd or (remote and { "gopls", "-remote=auto" } or { "gopls" })
+    -- The gopls install.sh chose for the go in PATH (lua/go_tools.lua);
+    -- the bare name when there is no choice on record.
+    local gopls = require("go_tools").path("gopls")
+    local cmd = opts.cmd or (remote and { gopls, "-remote=auto" } or { gopls })
 
     return {
         cmd = cmd,

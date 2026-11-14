@@ -38,12 +38,16 @@ local config = go_lsp.config({
 
 assert(config.cmd_env.GOTOOLCHAIN == nil, "gopls must inherit the shell GOTOOLCHAIN policy")
 assert(config.cmd_env.GOPROXY == nil, "gopls must not override GOPROXY")
+-- The gopls install.sh chose for the go in PATH (go-tools.env), the bare
+-- name without the file.
+local gopls = require("go_tools").path("gopls")
+assert(config.cmd[1] == gopls, "gopls by the path install.sh chose: " .. vim.inspect(config.cmd))
 
 local pinned = go_lsp.config({ cmd_env = { GOTOOLCHAIN = "local" } })
-assert(vim.deep_equal(go_lsp.config({}).cmd, { "gopls", "-remote=auto" }) or vim.env.NVIM_GOPLS_REMOTE == "0",
+assert(vim.deep_equal(go_lsp.config({}).cmd, { gopls, "-remote=auto" }) or vim.env.NVIM_GOPLS_REMOTE == "0",
     "gopls must use the shared daemon by default")
-assert(vim.deep_equal(go_lsp.config({ remote = false }).cmd, { "gopls" }), "remote=false must run gopls in-process")
-assert(vim.deep_equal(go_lsp.config({ remote = true }).cmd, { "gopls", "-remote=auto" }), "remote=true must forward")
+assert(vim.deep_equal(go_lsp.config({ remote = false }).cmd, { gopls }), "remote=false must run gopls in-process")
+assert(vim.deep_equal(go_lsp.config({ remote = true }).cmd, { gopls, "-remote=auto" }), "remote=true must forward")
 assert(pinned.cmd_env.GOTOOLCHAIN == "local", "explicit toolchain pin was dropped")
 assert(config.workspace_required == false, "standalone workspace support disabled")
 assert(config.settings.gopls.semanticTokens == true, "semantic tokens disabled")

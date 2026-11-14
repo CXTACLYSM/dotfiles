@@ -426,6 +426,10 @@ conform.setup({
     formatters_by_ft = {
         go = { "gofumpt" },
     },
+    -- The gofumpt install.sh chose for the go in PATH (lua/go_tools.lua).
+    formatters = {
+        gofumpt = { command = require("go_tools").path("gofumpt") },
+    },
     default_format_opts = {
         lsp_format = "fallback",
     },
@@ -871,7 +875,9 @@ require("gitsigns").setup({
 local go_debug = require("go_debug")
 
 go_debug.setup({
-    dlv = "dlv",
+    -- The dlv built by the go in PATH (lua/go_tools.lua): delve debugs
+    -- only binaries of a Go close to its own.
+    dlv = require("go_tools").path("dlv"),
     build_flags = {},
     output_mode = "remote",
 })
