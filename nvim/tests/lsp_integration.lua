@@ -5,6 +5,58 @@ local function real(path)
     return vim.uv.fs_realpath(path) or vim.fs.normalize(vim.fs.abspath(path))
 end
 
+-- What gopls says about itself and the workspace, kept for the report of a
+-- failure: "go: go.mod requires go >= 1.23 (running go 1.22)", a missing
+-- toolchain, a GOFLAGS that breaks the load.
+local said = {}
+for _, method in ipairs({ "window/showMessage", "window/logMessage" }) do
+    local previous = vim.lsp.handlers[method]
+    vim.lsp.handlers[method] = function(err, result, ctx, config)
+        if result and result.message then
+            table.insert(said, string.format("%s: %s", method:gsub("^window/", ""), result.message))
+        end
+        if previous then
+            return previous(err, result, ctx, config)
+        end
+    end
+end
+
+-- Why gopls could not load the workspace: the Go environment the fixture
+-- runs with, what `go list` says in the root, the messages of gopls and
+-- the tail of the LSP log (gopls writes its stderr there).
+local function why_not_loaded(root)
+    local out = {}
+    local function run(cmd, cwd, env)
+        local result = vim.system(cmd, { cwd = cwd, text = true, env = env }):wait(20000)
+        table.insert(out, "$ " .. (env and env.GOTOOLCHAIN and ("GOTOOLCHAIN=" .. env.GOTOOLCHAIN .. " ") or "")
+            .. table.concat(cmd, " ") .. (cwd and ("  (in " .. cwd .. ")") or ""))
+        table.insert(out, vim.trim((result.stdout or "") .. (result.stderr or "")))
+    end
+    -- In the root: the directory Neovim was started in may ask for another
+    -- toolchain (verify.sh starts it in the trigger module on purpose).
+    -- The toolchain that is installed, then what the module makes go do.
+    local local_go = vim.tbl_extend("force", vim.fn.environ(), { GOTOOLCHAIN = "local" })
+    run({ "go", "version" }, root, local_go)
+    run({ "go", "env", "GOROOT", "GOTOOLCHAIN", "GOVERSION", "GOFLAGS", "GOWORK", "GOENV", "GOPROXY", "GOMODCACHE", "CGO_ENABLED" }, root, local_go)
+    run({ "go", "version" }, root)
+    run({ "gopls", "version" }, root)
+    run({ "go", "list", "-e", "-f", "{{.ImportPath}}: {{if .Error}}{{.Error.Err}}{{else}}ok{{end}}", "./..." }, root)
+    run({ "go", "build", "-o", "/dev/null", "./..." }, root)
+    table.insert(out, "gopls said:")
+    for _, line in ipairs(said) do
+        table.insert(out, "  " .. line)
+    end
+    local log = vim.lsp.log.get_filename()
+    local ok, lines = pcall(vim.fn.readfile, log)
+    if ok then
+        table.insert(out, "tail of " .. log .. ":")
+        for i = math.max(1, #lines - 40), #lines do
+            table.insert(out, "  " .. lines[i])
+        end
+    end
+    return table.concat(out, "\n")
+end
+
 local attached = vim.wait(20000, function()
     return #vim.lsp.get_clients({ bufnr = 0, name = "gopls" }) == 1
 end, 50)
@@ -150,14 +202,21 @@ end
 -- the workspace is done: on a machine with a cold build cache that takes
 -- longer than the attach, so the first request is asked again until it
 -- has a result.
+local load_timeout = tonumber(os.getenv("NVIM_LSP_LOAD_TIMEOUT_MS")) or 90000
 local function request_until_loaded(method, params)
-    local deadline = vim.uv.now() + 90000
+    local deadline = vim.uv.now() + load_timeout
+    local last
     while true do
-        local result = request(method, params)
-        if result ~= nil and not (vim.islist(result) and #result == 0) then
-            return result
+        local response = client:request_sync(method, params, 15000, bufnr)
+        if response and not response.err and response.result ~= nil
+            and not (vim.islist(response.result) and #response.result == 0) then
+            return response.result
         end
-        assert(vim.uv.now() < deadline, method .. " stayed empty for 90 s: gopls did not load the workspace")
+        -- "no views" while the workspace fails to load, null while it loads.
+        last = response and (response.err and vim.inspect(response.err) or "null") or "no response"
+        assert(vim.uv.now() < deadline, string.format(
+            "%s answered %s for %d s: gopls did not load the workspace\n%s",
+            method, last, load_timeout / 1000, why_not_loaded(client.config.root_dir)))
         vim.wait(250, function()
             return false
         end)

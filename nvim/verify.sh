@@ -131,10 +131,25 @@ standalone="$work/nvim-go-standalone"
 trigger="$work/nvim-go-toolchain-trigger"
 mkdir -p "$module/localdep" "$standalone" "$trigger"
 
-cat > "$module/go.mod" <<'EOF_MODULE'
+# The fixtures ask for the Go that is installed (go 1.N), never for a newer
+# one: with a go line above the local toolchain and the proxy off, go would
+# try to fetch a toolchain, gopls would load nothing and answer null to
+# every request. The trigger module below is the one that asks for more.
+local_go_version="$(GOTOOLCHAIN=local go env GOVERSION)"
+local_go_minor="${local_go_version#go1.}"
+local_go_minor="${local_go_minor%%.*}"
+case "$local_go_minor" in
+  ''|*[!0-9]*)
+    echo "unable to derive local Go minor version from $local_go_version" >&2
+    exit 1
+    ;;
+esac
+fixture_go="1.$local_go_minor"
+
+cat > "$module/go.mod" <<EOF_MODULE
 module example.com/editorfixture
 
-go 1.23.0
+go $fixture_go
 
 require example.com/localdep v0.0.0
 
@@ -203,10 +218,10 @@ func countdown(n int) {
 	}
 }
 EOF_MODULE_GO
-cat > "$module/localdep/go.mod" <<'EOF_DEP_MOD'
+cat > "$module/localdep/go.mod" <<EOF_DEP_MOD
 module example.com/localdep
 
-go 1.23.0
+go $fixture_go
 EOF_DEP_MOD
 cat > "$module/localdep/greeting.go" <<'EOF_DEP_GO'
 package localdep
@@ -243,15 +258,6 @@ func message(name string) string {
 }
 EOF_STANDALONE_HELPER
 
-local_go_version="$(GOTOOLCHAIN=local go env GOVERSION)"
-local_go_minor="${local_go_version#go1.}"
-local_go_minor="${local_go_minor%%.*}"
-case "$local_go_minor" in
-  ''|*[!0-9]*)
-    echo "unable to derive local Go minor version from $local_go_version" >&2
-    exit 1
-    ;;
-esac
 required_go="1.$((local_go_minor + 1)).0"
 
 cat > "$trigger/go.mod" <<EOF_TRIGGER_MOD
