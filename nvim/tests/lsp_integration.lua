@@ -146,7 +146,25 @@ else
     error("unknown scenario: " .. scenario)
 end
 
-local definitions = request(
+-- gopls answers null (no error) to a definition until its first load of
+-- the workspace is done: on a machine with a cold build cache that takes
+-- longer than the attach, so the first request is asked again until it
+-- has a result.
+local function request_until_loaded(method, params)
+    local deadline = vim.uv.now() + 90000
+    while true do
+        local result = request(method, params)
+        if result ~= nil and not (vim.islist(result) and #result == 0) then
+            return result
+        end
+        assert(vim.uv.now() < deadline, method .. " stayed empty for 90 s: gopls did not load the workspace")
+        vim.wait(250, function()
+            return false
+        end)
+    end
+end
+
+local definitions = request_until_loaded(
     "textDocument/definition",
     params_at(definition_line, definition_needle, false)
 )
