@@ -66,6 +66,7 @@ vim.fn.writefile({
     "| a | b |",
     "|---|---|",
     "| 1 | 2 |",
+    "| a long key in the first column | and a cell of prose that is far wider than any column a narrow window could give it, so that it has to wrap over several rows |",
     "",
     "- [x] done",
     "- [ ] open",
@@ -91,6 +92,38 @@ end, "marks in the markdown buffer")
 assert(vim.wo.conceallevel == 3, "raw marks hidden while drawn")
 print(string.format("MARKDOWN_RENDER_OK marks=%d", marks(buf)))
 
+-- Space m: the page (md-render) takes the window in place of the source:
+-- a read-only buffer of its own, the table boxed with its cells wrapped
+-- (nothing cut to "…"), the heading without its `#`, no line numbers;
+-- Space m there brings the source back with its numbers, and the source
+-- is untouched.
+local page_win = vim.api.nvim_get_current_win()
+local page_map = vim.fn.maparg("<leader>m", "n", false, true)
+assert(page_map.buffer == 1 and page_map.desc == "Markdown page / source", "Space m in markdown buffers")
+vim.api.nvim_win_set_cursor(page_win, { 11, 0 })
+page_map.callback()
+local page_buf = vim.api.nvim_get_current_buf()
+assert(page_buf ~= buf and vim.b[page_buf].md_render and vim.bo[page_buf].filetype == "md-render",
+    "the page is a buffer of md-render: " .. vim.inspect({ page_buf, vim.bo[page_buf].filetype }))
+assert(vim.bo[page_buf].modifiable == false, "the page is read-only")
+assert(vim.api.nvim_buf_get_name(page_buf):find("[render]", 1, true), "named after the source: " .. vim.api.nvim_buf_get_name(page_buf))
+local page_text = table.concat(vim.api.nvim_buf_get_lines(page_buf, 0, -1, false), "\n")
+assert(page_text:find("Title", 1, true) and not page_text:find("# Title", 1, true), "the heading without its #: " .. page_text)
+assert(page_text:find("│", 1, true) and page_text:find("│ a ", 1, true), "the table boxed: " .. page_text)
+assert(not page_text:find("…", 1, true) and page_text:find("several rows", 1, true),
+    "a wide cell wraps instead of being cut: " .. page_text)
+assert(vim.wo.number == false and vim.wo.relativenumber == false, "no line numbers on the page")
+assert(vim.wo.winbar == "", "the page has no breadcrumbs bar")
+assert(vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].modified == false, "the source is untouched")
+local back_map = vim.fn.maparg("<leader>m", "n", false, true)
+assert(back_map.buffer == 1 and back_map.desc == "Markdown page / source", "Space m in the page")
+back_map.callback()
+assert(vim.api.nvim_get_current_buf() == buf and vim.api.nvim_get_current_win() == page_win, "back to the source in the same window")
+assert(vim.wo.number == true and vim.wo.relativenumber == true, "the numbers are back")
+assert(vim.api.nvim_win_get_cursor(page_win)[1] == 11, "the cursor on the same line: " .. vim.api.nvim_win_get_cursor(page_win)[1])
+assert(marks(buf) > 0, "render-markdown still draws the source")
+print("MARKDOWN_PAGE_OK")
+
 -- The mermaid block: node draws it, the lines come as overlays over the
 -- source in box-drawing characters; the cursor inside reveals the source.
 local diagram_ns = assert(vim.api.nvim_get_namespaces().markdown_diagrams, "markdown_diagrams namespace")
@@ -112,8 +145,8 @@ end, 50), "the diagram is drawn (node)")
 local drawn = overlays(buf)
 local boxes = 0
 for _, line in ipairs(drawn) do
-    -- Lines 20–22 are the source between the fences (19 and 23).
-    assert(line[1] >= 20 and line[1] <= 22, "the overlay stays on the source lines of the block: line " .. line[1])
+    -- Lines 21–23 are the source between the fences (20 and 24).
+    assert(line[1] >= 21 and line[1] <= 23, "the overlay stays on the source lines of the block: line " .. line[1])
     if line[2]:find("[┌└│─]") then
         boxes = boxes + 1
     end
@@ -121,7 +154,7 @@ end
 assert(boxes > 0, "box-drawing characters in the diagram: " .. vim.inspect(drawn))
 assert(table.concat(vim.tbl_map(function(line) return line[2] end, drawn), "\n"):find("Handler", 1, true),
     "the diagram names its nodes")
-vim.api.nvim_win_set_cursor(0, { 20, 0 })
+vim.api.nvim_win_set_cursor(0, { 21, 0 })
 vim.cmd.doautocmd("CursorMoved")
 assert(vim.wait(2000, function()
     return #overlays(buf) == 0
@@ -171,8 +204,8 @@ local function settle()
     end)
 end
 
-local toggle = vim.fn.maparg("<leader>m", "n", false, true)
-assert(toggle.buffer == 1 and toggle.desc == "Markdown drawn / raw", "Space m in markdown buffers")
+local toggle = vim.fn.maparg("<leader>M", "n", false, true)
+assert(toggle.buffer == 1 and toggle.desc == "Markdown drawn / raw", "Space M in markdown buffers")
 settle()
 toggle.callback()
 wait_for(function()

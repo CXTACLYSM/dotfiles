@@ -1,8 +1,20 @@
 -- Markdown drawn for reading (render-markdown.nvim): headings, code blocks,
 -- tables, lists, quotes and links are drawn over the text. The cursor line
 -- and Insert mode show the raw markdown; a read-only `nvim -R` (the tmux
--- documentation popup) keeps every line drawn. Space m switches the buffer
+-- documentation popup) keeps every line drawn. Space M switches the buffer
 -- between drawn and raw.
+--
+-- Space m shows the file as a page (md-render.nvim): the markdown is
+-- rendered into a read-only buffer of its own ("README.md [render]",
+-- filetype md-render) that takes the window in place of the source —
+-- paragraphs reflowed to the width of the window (up to M.page_width),
+-- tables boxed with their cells wrapped, headings marked by level (Nerd
+-- Font glyphs: the page is for the terminal of the iTerm profile), no
+-- line numbers; `za` or Enter fold a callout. Space m again brings the
+-- source back, the cursor on the same line. The source buffer is never
+-- touched, so render-markdown stays for editing. No network: a remote
+-- image or a mermaid picture would need a Kitty-graphics terminal, which
+-- iTerm2 is not, so md-render draws neither and asks nothing.
 --
 -- A ```mermaid block is drawn as a box diagram over its source
 -- (lua/markdown_diagrams.lua on the engine of ascii-mermaid: flowcharts,
@@ -70,10 +82,35 @@ function M.config(reader)
             custom = { todo = { rendered = "◐" } },
         },
         anti_conceal = { enabled = not reader },
+        -- Floats (K, signature help, the docs of completion) are scratch
+        -- buffers sized by their text: there a code block is drawn as wide
+        -- as its text, without pads, a minimum width and the bar with the
+        -- language over it, so the float holds exactly its content. The
+        -- cursor in a float (K again) keeps the drawing: a raw fence
+        -- under it would take a row of a float sized without it.
+        overrides = {
+            buftype = {
+                nofile = {
+                    code = {
+                        language = false,
+                        min_width = 0,
+                        left_pad = 0,
+                        right_pad = 0,
+                    },
+                    anti_conceal = { enabled = false },
+                    win_options = {
+                        concealcursor = { rendered = "nc" },
+                    },
+                },
+            },
+        },
     })
 end
 
 M.diagrams = false
+
+-- Widest rendered line of a page; a narrower window wraps to its width.
+M.page_width = 100
 
 function M.setup()
     -- `nvim -R` is for reading: no raw cursor line there, and a diagram
@@ -84,6 +121,33 @@ function M.setup()
     if diagrams.available() then
         diagrams.setup({ reader = reader })
         M.diagrams = true
+    end
+
+    vim.g.md_render_max_width = M.page_width
+    -- Scaled headings are a Kitty protocol found by querying the terminal;
+    -- iTerm2 has none, so the query is not sent.
+    require("md-render.text_size").setup({ enabled = false })
+    -- A table is drawn with its cells wrapped, as a browser draws it.
+    -- md-render's own default cuts a wide cell to "…" and waits for Enter
+    -- on the table to wrap it; there is no setting for the default, so the
+    -- renderer is asked for the wrapped form every time (the version is
+    -- pinned, nvim-pack-lock.json).
+    local tables = require("md-render.markdown_table")
+    local render = tables.render
+    tables.render = function(parsed, indent, max_width, _, buf_dir)
+        return render(parsed, indent, max_width, true, buf_dir)
+    end
+end
+
+-- The window between the source and its page (md-render.nvim), in place.
+-- md-render sets the filetype of the page with autocommands off, so the
+-- key back is mapped here, once the page is in the window.
+function M.page()
+    require("md-render.preview").toggle()
+    local buf = vim.api.nvim_get_current_buf()
+    if vim.b[buf].md_render and not vim.b[buf].markdown_page_keys then
+        vim.b[buf].markdown_page_keys = true
+        vim.keymap.set("n", "<leader>m", M.page, { buffer = buf, desc = "Markdown page / source" })
     end
 end
 

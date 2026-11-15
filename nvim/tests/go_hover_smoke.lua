@@ -119,8 +119,9 @@ assert(vim.wait(10000, function()
 end, 20), "K opened no float")
 local shown = table.concat(vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(float), 0, -1, false), "\n")
 assert(shown:find("type Customer struct", 1, true), "float shows the struct: " .. shown)
--- The float is wide enough for the drawing of render-markdown (code blocks
--- padded and at least 60 wide) and wraps what is wider than the screen.
+-- The float is as wide as its content: render-markdown draws a code block
+-- in a float without pads, a minimum width and the language bar, so the
+-- widest line decides; nothing of the drawing is under the border.
 vim.wait(300, function()
     return false
 end)
@@ -138,23 +139,71 @@ for _, mark in ipairs(vim.api.nvim_buf_get_extmarks(float_buf, render_ns, 0, -1,
         drawn_to = math.max(drawn_to, mark[3] + w)
     end
 end
-assert(width >= 64 and width >= drawn_to, string.format("the float (%d) is narrower than its drawing (%d)", width, drawn_to))
--- render-markdown turns wrap off once the raw lines fit the float; a line
--- wider than the float keeps it on.
-local longest = 0
+local widest = 0
 for _, line in ipairs(vim.api.nvim_buf_get_lines(float_buf, 0, -1, false)) do
-    longest = math.max(longest, vim.fn.strdisplaywidth(line))
+    assert(not line:find("\t", 1, true), "tabs are spaces in the float: " .. line)
+    if not line:match("^```") and not line:match("^─+$") then
+        widest = math.max(widest, vim.fn.strdisplaywidth(line))
+    end
 end
-assert(vim.wo[float].wrap == (longest > width), string.format("wrap %s with the longest line %d in a float of %d",
-    tostring(vim.wo[float].wrap), longest, width))
-assert(vim.api.nvim_win_get_height(float) >= math.min(vim.api.nvim_win_text_height(float, {}).all, math.floor(vim.o.lines * 0.7)),
-    "the float shows all its rows")
-assert(go_hover.float_width({ "short" }) == 64 and go_hover.float_width({ string.rep("x", 100) }) == math.min(104, vim.o.columns - 4),
-    "width: at least a code block, else the longest line and the pads")
+assert(width == widest, string.format("the float (%d) is as wide as its widest line (%d)", width, widest))
+assert(width >= drawn_to, string.format("the float (%d) is narrower than its drawing (%d)", width, drawn_to))
+local code = vim.api.nvim_buf_get_extmarks(float_buf, render_ns, 0, -1, { details = true })
+for _, mark in ipairs(code) do
+    assert(mark[4].virt_text_pos ~= "inline", "no pads in a float: " .. vim.inspect(mark[4].virt_text))
+end
+-- The rows shown and no more: the fences take none.
+assert(vim.api.nvim_win_get_height(float) == math.min(vim.api.nvim_win_text_height(float, {}).all, math.floor(vim.o.lines * 0.7)),
+    "the float as high as its rows")
+-- The width of a line as drawn: a link shows its text, inline code loses
+-- its backticks, a code line is what it is, a thematic break does not count.
+assert(go_hover.float_width({ "```go", "var total int", "```" }) == 13, "a short hover is a short float")
+assert(go_hover.float_width({ "[`fmt.Sprintf` on pkg.go.dev](https://pkg.go.dev/fmt#Sprintf)" }) == #"fmt.Sprintf on pkg.go.dev",
+    "a link is as wide as its text")
+assert(go_hover.float_width({ "abc", "---" }) == 3, "a thematic break takes the width of the float")
+assert(go_hover.float_width({ "```go", "x := `[a](b)`", "```" }) == #"x := `[a](b)`", "code is drawn as it is")
+assert(go_hover.float_width({ string.rep("x", 300) }) == math.max(vim.o.columns - 4, 20), "a line wider than the screen wraps")
 k.callback()
 assert(vim.api.nvim_get_current_win() == float, "K again focuses the float")
+assert(vim.api.nvim_win_get_cursor(float)[1] == 2, "the cursor on the first line shown, not on the fence")
+assert(vim.wo[float].concealcursor:find("n", 1, true), "the drawing stays under the cursor")
 vim.cmd("wincmd p")
 vim.api.nvim_win_close(float, true)
 print("GO_HOVER_FLOAT_OK")
+
+-- A link is its text in the float: the window wraps the raw line, so the
+-- hidden target of "[… on pkg.go.dev](https://…)" broke a short line into
+-- rows near the right edge of the screen. Inside a code block nothing
+-- changes.
+assert(vim.deep_equal(go_hover.as_drawn({
+    "[`fmt.Sprintf` on pkg.go.dev](https://pkg.go.dev/fmt#Sprintf)",
+    "see [a](b) and [c](d)",
+    "```go",
+    "x := `[a](b)`",
+    "```",
+}), { "`fmt.Sprintf` on pkg.go.dev", "see a and c", "```go", "x := `[a](b)`", "```" }), "links as drawn")
+at("fmt.Println(o.ID", "Println")
+k.callback()
+assert(vim.wait(10000, function()
+    for _, other in ipairs(vim.api.nvim_list_wins()) do
+        if vim.w[other]["textDocument/hover"] == buf then
+            float = other
+            return true
+        end
+    end
+    return false
+end, 20), "K on fmt.Println opened no float")
+local link_lines = vim.api.nvim_buf_get_lines(vim.api.nvim_win_get_buf(float), 0, -1, false)
+local link_text = table.concat(link_lines, "\n")
+assert(link_text:find("`fmt.Println` on pkg.go.dev", 1, true), "the link text stays: " .. link_text)
+assert(not link_text:find("](", 1, true), "no link target in the float: " .. link_text)
+for _, line in ipairs(link_lines) do
+    if line:find("on pkg.go.dev", 1, true) then
+        assert(vim.fn.strdisplaywidth(line) <= vim.api.nvim_win_get_config(float).width,
+            "the link line fits the float in one row: " .. line)
+    end
+end
+vim.api.nvim_win_close(float, true)
+print("GO_HOVER_LINK_OK")
 
 print("GO_HOVER_SMOKE_OK")

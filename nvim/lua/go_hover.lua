@@ -363,19 +363,83 @@ function M.contents(client, win, done)
     end, bufnr)
 end
 
--- The float sized for the drawing, not for the raw text: render-markdown
--- pads a code block by two columns on each side and draws it at least 60
--- wide, so a float as wide as its longest line cut the right edge of every
--- block. A line wider than the screen wraps instead of being cut.
-function M.float_width(lines)
-    local longest = 0
-    for _, line in ipairs(lines) do
-        longest = math.max(longest, vim.fn.strdisplaywidth(line))
+-- Tabs as the spaces of a Go buffer (tabstop 4): the float draws the same
+-- columns its width is counted for.
+local function expand_tabs(line)
+    if not line:find("\t", 1, true) then
+        return line
     end
-    return math.min(math.max(longest + 4, 64), math.max(vim.o.columns - 4, 20))
+    local out, width = {}, 0
+    for _, char in ipairs(vim.fn.split(line, "\\zs")) do
+        if char == "\t" then
+            local pad = 4 - width % 4
+            table.insert(out, string.rep(" ", pad))
+            width = width + pad
+        else
+            table.insert(out, char)
+            width = width + vim.fn.strdisplaywidth(char)
+        end
+    end
+    return table.concat(out)
+end
+
+-- How wide a line of the hover is drawn. In a float render-markdown draws
+-- a code block as wide as its text, with no pads, and hides the fences
+-- (lua/markdown_view.lua); in the text it hides the targets of links and
+-- the marks of inline code and escapes: "[`fmt.Sprintf` on
+-- pkg.go.dev](https://pkg.go.dev/fmt#Sprintf)" is "fmt.Sprintf on
+-- pkg.go.dev".
+local function drawn_width(line, code)
+    if not code then
+        line = line:gsub("%[(.-)%]%b()", "%1"):gsub("\\(%p)", "%1"):gsub("`", "")
+    end
+    return vim.fn.strdisplaywidth(line)
+end
+
+-- The text of the hover as it is drawn: a link outside a code block is its
+-- text. render-markdown hides the target of a link, but the window wraps
+-- the raw line, so "[(model.Order).Delivery on pkg.go.dev](https://…)" in
+-- a float as wide as the drawn text broke into rows that were mostly
+-- hidden: "pkg.go." on one, "dev" on the next, an empty one after.
+function M.as_drawn(lines)
+    local out, code = {}, false
+    for _, line in ipairs(lines) do
+        if line:match("^%s*```") then
+            code = not code
+        elseif not code then
+            line = line:gsub("%[(.-)%]%b()", "%1")
+        end
+        table.insert(out, line)
+    end
+    return out
+end
+
+-- The float as wide as its widest drawn line, at most the screen less a
+-- margin: a wider line wraps instead of being cut. A thematic break is
+-- drawn as wide as the float, so it does not count.
+function M.float_width(lines)
+    local widest, code = 1, false
+    for _, line in ipairs(lines) do
+        if line:match("^%s*```") then
+            code = not code
+        elseif code or not line:match("^%s*%-%-%-+%s*$") then
+            widest = math.max(widest, drawn_width(line, code))
+        end
+    end
+    return math.min(widest, math.max(vim.o.columns - 4, 20))
+end
+
+-- The height for the rows shown: the concealed fences take none, a wrapped
+-- line takes several.
+local function fit_height(winid, max_height)
+    if vim.api.nvim_win_is_valid(winid) then
+        local shown = vim.api.nvim_win_text_height(winid, {}).all
+        vim.api.nvim_win_set_height(winid, math.max(1, math.min(shown, max_height)))
+    end
 end
 
 local function show(bufnr, client, lines, hover)
+    lines = M.as_drawn(vim.tbl_map(expand_tabs, lines))
     local max_height = math.max(10, math.floor(vim.o.lines * 0.7))
     local _, winid = vim.lsp.util.open_floating_preview(lines, "markdown", {
         focus_id = focus_id,
@@ -383,13 +447,9 @@ local function show(bufnr, client, lines, hover)
         width = M.float_width(lines),
         max_height = max_height,
     })
-    -- Once drawn, the height follows what is shown: the concealed fences
-    -- take no rows, a wrapped line takes several.
+    -- Once drawn: render-markdown hides the fences on its first render.
     vim.schedule(function()
-        if vim.api.nvim_win_is_valid(winid) then
-            local shown = vim.api.nvim_win_text_height(winid, {}).all
-            vim.api.nvim_win_set_height(winid, math.max(1, math.min(shown, max_height)))
-        end
+        fit_height(winid, max_height)
     end)
     -- The hovered name stays marked while the float is open, as with the
     -- native K.
@@ -425,6 +485,14 @@ function M.hover()
     for _, other in ipairs(vim.api.nvim_tabpage_list_wins(0)) do
         if vim.w[other][focus_id] == bufnr then
             vim.api.nvim_set_current_win(other)
+            -- The cursor on the first line shown, not on the hidden fence.
+            local float_buf = vim.api.nvim_win_get_buf(other)
+            local first = vim.api.nvim_buf_get_lines(float_buf, 0, 1, false)[1] or ""
+            if vim.api.nvim_win_get_cursor(other)[1] == 1 and first:match("^%s*```")
+                and vim.api.nvim_buf_line_count(float_buf) > 1
+            then
+                vim.api.nvim_win_set_cursor(other, { 2, 0 })
+            end
             return
         end
     end

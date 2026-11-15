@@ -39,6 +39,8 @@ local modules = {
     "peek",
     "go_hover",
     "breadcrumbs",
+    "cursor_diagnostic",
+    "usages",
     "change_tree.go_index",
     "change_tree.semantic_graph",
     "change_tree",

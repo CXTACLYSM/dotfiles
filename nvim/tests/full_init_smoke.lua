@@ -17,7 +17,7 @@ for _, name in ipairs({
     "GoDebugTest", "GoDebug", "DapContinue", "DapToggleBreakpoint", "Gitsigns",
     "ChangeTree", "ChangeTreeAuto", "ChangeTreeCancel",
     "ChangeTreeText", "ChangeTreeLedger", "ChangeTreeTrace", "ChangeTreeIndex",
-    "Neotree", "FormatOnSave", "GoImpl", "BufferLineCycleNext",
+    "Neotree", "FormatOnSave", "GoImpl", "BufferLineCycleNext", "MdRender",
 }) do
     assert(vim.fn.exists(":" .. name) == 2, "missing command :" .. name)
 end
@@ -39,10 +39,12 @@ for _, lhs in ipairs({
     "<leader>st", "]t", "[t", "<leader>sQ",
     "<leader>f", "<leader>F", "<leader>/", "<leader>sS", "grp", "grq", "<leader>p", "<leader>P", "<M-1>",
     "<leader>e", "<leader>?", "<leader>j", "<leader>cp", "<leader>ce", "grP",
-    "]b", "[b", "<leader>x", "<leader>X",
+    "]b", "[b", "<leader>x", "<leader>X", "]u", "[u", "]r", "[r",
 }) do
     assert(has_map("n", lhs), "missing normal mapping " .. lhs)
 end
+assert(vim.fn.maparg("]u", "n", false, true).callback == vim.fn.maparg("]r", "n", false, true).callback,
+    "]r is ]u under its old name")
 
 for _, lhs in ipairs({ "af", "if", "aa", "ia", "ac", "ic", "ab", "ib" }) do
     assert(has_map("x", lhs) and has_map("o", lhs), "missing text object " .. lhs)
@@ -99,7 +101,7 @@ do
         return table.concat(reached, ",")
     end
     for key, expected in pairs({
-        ["]s"] = "5,7", ["]i"] = "5", ["]v"] = "3", ["]m"] = "9", ["]f"] = "9,10,11,25",
+        ["]s"] = "5,7", ["]i"] = "5", ["]v"] = "12,18", ["]m"] = "9", ["]f"] = "9,10,11,25",
         ["]G"] = "10", ["]g"] = "11", ["]l"] = "12", ["]w"] = "13", ["]k"] = "14",
         ["]R"] = "15,20,22", ["]e"] = "19", ["]T"] = "25",
     }) do
@@ -169,6 +171,63 @@ do
     vim.fn.delete(file)
 end
 
+-- ]v lands on the name of each variable where it is declared: var of the
+-- file and of a function, :=, range, type switch, select case; not a
+-- const, a parameter, `_` or an assignment with =.
+do
+    local file = vim.fn.tempname() .. ".go"
+    vim.fn.writefile({
+        "package main",                     -- 1
+        "",
+        "const limit = 3",                  -- 3
+        "",
+        "var (",                            -- 5
+        "\ttotal, _ = 1, 2",                -- 6
+        ")",
+        "",
+        "func run(ch chan int, x any) {",   -- 9
+        "\tcount := 0",                     -- 10
+        "\tvar seen bool",                  -- 11
+        "\tfor _, item := range []int{} {", -- 12
+        "\t\tcount = item",
+        "\t}",
+        "\tfor count = range ch {",
+        "\t}",
+        "\tswitch v := x.(type) {",         -- 17
+        "\tcase int:",
+        "\t\t_ = v",
+        "\t}",
+        "\tselect {",
+        "\tcase got, ok := <-ch:",          -- 22
+        "\t\t_, _ = got, ok",
+        "\tcase count = <-ch:",
+        "\t}",
+        "\t_ = seen",
+        "}",
+    }, file)
+    vim.cmd.edit(file)
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    local stops = {}
+    for _ = 1, 12 do
+        local before = vim.api.nvim_win_get_cursor(0)
+        vim.cmd("normal ]v")
+        local after = vim.api.nvim_win_get_cursor(0)
+        if vim.deep_equal(before, after) then
+            break
+        end
+        table.insert(stops, vim.fn.expand("<cword>") .. "@" .. after[1])
+    end
+    local reached = table.concat(stops, " ")
+    assert(reached == "total@6 count@10 seen@11 item@12 v@17 got@22 ok@22", "]v stops: " .. reached)
+    vim.cmd("normal [v")
+    assert(vim.fn.expand("<cword>") == "got", "[v goes back")
+    vim.api.nvim_win_set_cursor(0, { 1, 0 })
+    vim.cmd("normal 3]v")
+    assert(vim.fn.expand("<cword>") == "seen", "a count: 3]v")
+    vim.cmd("bwipeout!")
+    vim.fn.delete(file)
+end
+
 -- In a .proto, by its syntax tree: ]p rpc, ]M message, ]s message or enum.
 do
     local file = vim.fn.tempname() .. ".proto"
@@ -234,9 +293,10 @@ do
 end
 
 local diagnostics = vim.diagnostic.config()
-assert(type(diagnostics.virtual_text) == "table" and diagnostics.virtual_text.current_line == true,
-    "diagnostic text only on the cursor line")
-assert(diagnostics.virtual_lines == false, "no diagnostic lines that shift the text")
+assert(diagnostics.virtual_text == false and diagnostics.virtual_lines == false,
+    "no built-in diagnostic text: it cut what did not fit")
+assert(type(diagnostics.cursor_diagnostic) == "table" and vim.diagnostic.handlers.cursor_diagnostic,
+    "the messages of the cursor line in full (lua/cursor_diagnostic.lua)")
 for _, language in ipairs({ "go", "sql", "comment" }) do
     assert(pcall(vim.treesitter.language.add, language), "parser " .. language)
 end

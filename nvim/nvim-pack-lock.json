@@ -28,6 +28,10 @@
       "rev": "8d79f2410c76e62b92e51c28c82e28c1c5a3daeb",
       "src": "https://github.com/lewis6991/gitsigns.nvim"
     },
+    "md-render.nvim": {
+      "rev": "977c8e4fd73bd1656836c87895458a54098920ba",
+      "src": "https://github.com/delphinus/md-render.nvim"
+    },
     "neo-tree.nvim": {
       "rev": "bb9779f532ef9ec62486a840fb5db44591aeff0f",
       "src": "https://github.com/nvim-neo-tree/neo-tree.nvim"

@@ -101,16 +101,21 @@ map("n", "<leader>d", vim.diagnostic.open_float, {
 })
 
 -- Keep diagnostics quiet while coding: signs and underlines everywhere, the
--- message only at the end of the line the cursor is on (no lines shift);
--- the full text with <leader>d.
+-- messages of the line the cursor is on in full: at the end of the line
+-- while they fit (no lines shift), under it and wrapped to the window when
+-- they do not, so a long message is never cut at the edge
+-- (lua/cursor_diagnostic.lua); the same in a float with <leader>d.
+require("cursor_diagnostic").setup({
+    prefix = "●",
+    spacing = 2,
+})
+
 vim.diagnostic.config({
-    virtual_text = {
-        current_line = true,
-        source = "if_many",
-        spacing = 2,
-        prefix = "●",
-    },
+    virtual_text = false,
     virtual_lines = false,
+    cursor_diagnostic = {
+        source = "if_many",
+    },
     -- Nerd Font glyphs (nf-fa: times-circle, warning, info-circle,
     -- lightbulb). Written as \u{…} escapes: characters of the Private Use
     -- Area are easily lost from a source file on the way through editors
@@ -153,6 +158,10 @@ vim.pack.add({
     "https://github.com/mfussenegger/nvim-dap",
     -- Markdown drawn for reading: headings, code blocks, tables, lists.
     "https://github.com/MeanderingProgrammer/render-markdown.nvim",
+    -- A markdown file as a page (Space m): rendered into a read-only
+    -- buffer of its own, paragraphs reflowed, tables boxed; the source
+    -- buffer is untouched. Pure Lua, no network for text.
+    "https://github.com/delphinus/md-render.nvim",
     -- The engine that draws a ```mermaid block as a box diagram: a bundled
     -- TypeScript script run by node, no browser and no network. The placing
     -- in the buffer is lua/markdown_diagrams.lua.
@@ -545,6 +554,8 @@ end
 
 -- Jumps between the Go keywords: ] next, [ previous, with a count, as
 -- motions too (d]e, v]m). The nodes are in after/queries/go/moves.scm.
+-- ]v lands on the name of a variable where it is declared (var, :=,
+-- range, type switch, select case); ]u from there walks its uses.
 for key, spec in pairs({
     m = { "method", "method" },
     e = { "err", "if err != nil" },
@@ -555,7 +566,7 @@ for key, spec in pairs({
     w = { "switch", "switch / select" },
     k = { "case", "case" },
     i = { "interface", "interface" },
-    v = { "var", "var / const of the file" },
+    v = { "var", "variable (where it is declared)" },
     T = { "test", "func Test…" },
 }) do
     local capture = "@" .. spec[1] .. ".outer"
@@ -1193,131 +1204,19 @@ local lsp_document_highlight = vim.api.nvim_create_augroup(
     { clear = false }
 )
 
--- Jump between semantic references to the symbol under the cursor
--- in the current buffer. Uses the same LSP documentHighlight data
--- as the automatic reference highlighting below.
-local function jump_document_reference(direction)
-    local bufnr = vim.api.nvim_get_current_buf()
+-- ]u / [u: the next / previous use of the name under the cursor in this
+-- file (a variable after ]v, a parameter, a field, a function), by the
+-- same gopls places as the highlight below; around past the ends, with a
+-- count, "total 2/5" in the message line (lua/usages.lua). ]r / [r are
+-- the same keys under their old name.
+local usages = require("usages")
 
-    for _, client in ipairs(vim.lsp.get_clients({ bufnr = bufnr })) do
-        if client:supports_method("textDocument/documentHighlight") then
-            local params = vim.lsp.util.make_position_params(
-                0,
-                client.offset_encoding
-            )
-
-            local response = client:request_sync(
-                "textDocument/documentHighlight",
-                params,
-                1000,
-                bufnr
-            )
-
-            local references = response and response.result or nil
-            if not references or #references == 0 then
-                return
-            end
-
-            table.sort(references, function(a, b)
-                local ap = a.range.start
-                local bp = b.range.start
-
-                if ap.line == bp.line then
-                    return ap.character < bp.character
-                end
-
-                return ap.line < bp.line
-            end)
-
-            local cursor = params.position
-
-            local function before(a, b)
-                return a.line < b.line
-                    or (
-                        a.line == b.line
-                        and a.character < b.character
-                    )
-            end
-
-            local function inside(range, pos)
-                return not before(pos, range.start)
-                    and before(pos, range["end"])
-            end
-
-            local target = nil
-
-            if direction > 0 then
-                for index, reference in ipairs(references) do
-                    if inside(reference.range, cursor) then
-                        local next_index = index + 1
-                        if next_index > #references then
-                            next_index = 1
-                        end
-
-                        target = references[next_index]
-                        break
-                    end
-
-                    if before(cursor, reference.range.start) then
-                        target = reference
-                        break
-                    end
-                end
-
-                target = target or references[1]
-            else
-                for index = #references, 1, -1 do
-                    local reference = references[index]
-
-                    if inside(reference.range, cursor) then
-                        local prev_index = index - 1
-                        if prev_index < 1 then
-                            prev_index = #references
-                        end
-
-                        target = references[prev_index]
-                        break
-                    end
-
-                    if before(reference.range.start, cursor) then
-                        target = reference
-                        break
-                    end
-                end
-
-                target = target or references[#references]
-            end
-
-            vim.lsp.util.show_document(
-                {
-                    uri = params.textDocument.uri,
-                    range = target.range,
-                },
-                client.offset_encoding,
-                {
-                    focus = true,
-                    reuse_win = true,
-                }
-            )
-
-            return
-        end
-    end
+for _, lhs in ipairs({ "]u", "]r" }) do
+    map({ "n", "x" }, lhs, usages.next, { desc = "Next use of the name under the cursor" })
 end
-
--- Reference navigation in the current file.
--- ]r = next semantic reference, [r = previous semantic reference.
-map("n", "]r", function()
-    jump_document_reference(1)
-end, {
-    desc = "Next LSP reference",
-})
-
-map("n", "[r", function()
-    jump_document_reference(-1)
-end, {
-    desc = "Previous LSP reference",
-})
+for _, lhs in ipairs({ "[u", "[r" }) do
+    map({ "n", "x" }, lhs, usages.previous, { desc = "Previous use of the name under the cursor" })
+end
 
 -- The completion menu never opens on zero typed characters. The re-trigger
 -- module takes the `.` trigger away from the native autotrigger and opens
@@ -1441,8 +1340,10 @@ go_tasks.setup({
 -- ============================================================
 
 -- README, docs and LSP hover drawn for reading, mermaid diagrams drawn as
--- box art over their blocks (lua/markdown_view.lua); Space m shows the raw
--- text of the buffer and back.
+-- box art over their blocks (lua/markdown_view.lua). Space m shows the
+-- file as a page (md-render: a read-only rendered buffer in place of the
+-- source, reflowed to the window) and back; Space M shows the raw text of
+-- the buffer and back.
 local markdown_view = require("markdown_view")
 
 markdown_view.setup()
@@ -1450,7 +1351,11 @@ markdown_view.setup()
 vim.api.nvim_create_autocmd("FileType", {
     pattern = "markdown",
     callback = function(event)
-        map("n", "<leader>m", markdown_view.toggle, {
+        map("n", "<leader>m", markdown_view.page, {
+            buffer = event.buf,
+            desc = "Markdown page / source",
+        })
+        map("n", "<leader>M", markdown_view.toggle, {
             buffer = event.buf,
             desc = "Markdown drawn / raw",
         })

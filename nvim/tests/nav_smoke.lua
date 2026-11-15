@@ -31,13 +31,34 @@ local function scopes(on, needle)
     local row, col = at(on, needle)
     return table.concat(breadcrumbs.scopes(source_buf, row - 1, col), " › ")
 end
-assert(scopes("return s.prefix + label", "label") == "(*Service) Describe › func", "closure scope: " .. scopes("return s.prefix + label", "label"))
+assert(scopes("return s.prefix + label", "label") == "(s *Service) Describe › func", "closure scope, the receiver with its name: "
+    .. scopes("return s.prefix + label", "label"))
+assert(scopes("func (memoryStore) Save(o Order) error { return nil }", "nil") == "(memoryStore) Save",
+    "a receiver without a name: " .. scopes("func (memoryStore) Save(o Order) error { return nil }", "nil"))
 assert(scopes("Total int", "Total") == "Order › Total", "struct field scope: " .. scopes("Total int", "Total"))
 assert(scopes('return "hello, " + name', "name") == "greeting", "function scope")
 assert(#breadcrumbs.scopes(source_buf, 1, 0) == 0, "no scope between declarations")
+-- The kind of each scope: its icon and colour in the bar.
+local function kinds(on, needle)
+    local row, col = at(on, needle)
+    return table.concat(vim.tbl_map(function(crumb)
+        return crumb.kind
+    end, breadcrumbs.crumbs(source_buf, row - 1, col)), " ")
+end
+assert(kinds("return s.prefix + label", "label") == "method closure", "kinds: " .. kinds("return s.prefix + label", "label"))
+assert(kinds("Total int", "Total") == "type field", "kinds: " .. kinds("Total int", "Total"))
+assert(kinds("Save(o Order) error", "Save") == "interface method", "kinds: " .. kinds("Save(o Order) error", "Save"))
+assert(kinds('return "hello, " + name', "name") == "function", "kinds: " .. kinds('return "hello, " + name', "name"))
 assert(vim.wo[source_win].winbar:find("breadcrumbs", 1, true), "file window has the bar")
+vim.api.nvim_win_set_cursor(source_win, { at("return s.prefix + label", "label") })
 local bar = breadcrumbs.render()
-assert(bar:find("main.go", 1, true), "bar shows the file: " .. bar)
+assert(bar:find("%#DevIconGo#", 1, true), "the icon of a Go file: " .. bar)
+assert(bar:find("%<", 1, true) and bar:find("%#BreadcrumbFile#main.go", 1, true), "the file name bright, the path cut first: " .. bar)
+assert(bar:find("%#BreadcrumbFunctionIcon#" .. breadcrumbs.opts.icons.method .. " %#BreadcrumbFunction#(s *Service) Describe", 1, true),
+    "the method with its icon and colour: " .. bar)
+assert(bar:find("%#BreadcrumbClosureIcon#", 1, true) and bar:find("%#BreadcrumbClosure#func", 1, true), "the closure dim: " .. bar)
+assert(next(vim.api.nvim_get_hl(0, { name = "BreadcrumbType" })) and vim.api.nvim_get_hl(0, { name = "BreadcrumbFile", link = false }).bold,
+    "the colours are set")
 vim.cmd("copen")
 assert(vim.wo.winbar == "", "quickfix window has no bar")
 vim.cmd("cclose")
@@ -205,6 +226,32 @@ assert(not peek.float(), "no float for several implementations")
 assert(peek._is_double("/x/mocks/store.go") and peek._is_double("/x/store_mock.go")
     and peek._is_double("/x/store_test.go") and not peek._is_double("/x/store.go"), "mock detection")
 print("PEEK_IMPLEMENTATION_OK")
+
+-- ]u / [u: the uses of the name under the cursor in the file, around past
+-- the ends; a field of the same name or another function does not count.
+local usages = require("usages")
+vim.api.nvim_set_current_win(source_win)
+local function cursor_after(fn, row, col)
+    fn()
+    vim.wait(5000, function()
+        local cursor = vim.api.nvim_win_get_cursor(source_win)
+        return cursor[1] == row and cursor[2] == col
+    end, 20)
+    return vim.api.nvim_win_get_cursor(source_win)
+end
+local label_row, label_col = at("label := fmt.Sprintf", "label")
+local use_row, use_col = at("return s.prefix + label", "label")
+vim.api.nvim_win_set_cursor(source_win, { label_row, label_col })
+assert(vim.deep_equal(cursor_after(usages.next, use_row, use_col), { use_row, use_col }), "]u: the use of label")
+assert(vim.deep_equal(cursor_after(usages.next, label_row, label_col), { label_row, label_col }), "]u past the last: around to the first")
+assert(vim.deep_equal(cursor_after(usages.previous, use_row, use_col), { use_row, use_col }), "[u: back around to the last")
+local o_row, o_col = at("func (s *Service) Describe(o Order)", "o Order")
+local total_row, total_col = at('label := fmt.Sprintf("%d", o.Total)', "o.Total")
+vim.api.nvim_win_set_cursor(source_win, { o_row, o_col })
+assert(vim.deep_equal(cursor_after(usages.next, total_row, total_col), { total_row, total_col }),
+    "]u from a parameter to its use, not to the `o` of another function")
+assert(vim.fn.maparg("]u", "n", false, true).callback == usages.next, "]u mapped")
+print("USAGES_OK")
 
 -- File ↔ test.
 local go_alt = require("go_alt")
