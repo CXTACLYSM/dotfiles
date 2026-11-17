@@ -293,6 +293,15 @@ state_of() { awk -F'\t' -v s="$1" '$1 == "session" && $2 == s { print $9 }' "$sn
 tmux -f /dev/null new-session -d -s seed -c "$work" -x 120 -y 30
 same "dev -d" "$(cd "$work/proj" && "$dev" -d)" "proj"
 same "layout windows" "$(tmux list-windows -t '=proj' -F '#W' | tr '\n' ' ')" "editor server tests "
+# No layout file: the windows by default, git (lazygit) the last one.
+mkdir -p "$work/auto"
+printf 'module example.com/auto\n\ngo 1.23\n' > "$work/auto/go.mod"
+same "dev -d without a layout" "$(cd "$work/auto" && "$dev" -d)" "auto"
+same "default windows, git last" "$(tmux list-windows -t '=auto' -F '#W' | tr '\n' ' ')" "editor server tests infra shell git "
+same "the git window in the root" "$(tmux list-panes -t '=auto:git' -F '#{pane_current_path}')" "$work_real/auto"
+for _ in 1 2 3 4 5 6 7 8 9 10; do [[ "$(tmux list-panes -t '=auto:git' -F '#{pane_current_command}')" == lazygit ]] && break; sleep 0.3; done
+same "lazygit running there" "$(tmux list-panes -t '=auto:git' -F '#{pane_current_command}')" "lazygit"
+tmux kill-session -t '=auto'
 tmux new-window -d -t '=proj:' -n extra -c "$work/other"
 tmux split-window -d -t '=proj:extra' -c "$work"
 tmux select-window -t '=proj:tests'

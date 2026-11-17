@@ -39,8 +39,9 @@
 #   3 tests    пусто: туда шлёт go test Space gt из nvim
 #   4 infra    make up или docker compose up -d, если есть compose-файл
 #   5 shell    свободное окно; DEV_SHELL=0 — без него
+#   6 git      lazygit в корне проекта (q — шелл там же)
 # Монорепо (в корне нет go.mod/go.work/package.json, а подпроектов ≥2):
-#   backend/editor backend/server backend/tests frontend/… infra shell
+#   backend/editor backend/server backend/tests frontend/… infra shell git
 
 emulate -L zsh
 path=(/opt/homebrew/bin /usr/local/bin $path)   # run-shell и popup — в окружении сервера tmux
@@ -317,6 +318,9 @@ auto_layout() {
   fi
   win infra "$(up_cmd)"
   [[ ${DEV_SHELL:-1} == 0 ]] || win shell
+  # The last window is git: lazygit in the root of the project, a shell
+  # there once it quits (q). Without lazygit — the shell alone.
+  if (( $+commands[lazygit] )); then win git -x lazygit; else win git; fi
 }
 
 # ============================================================
