@@ -225,6 +225,12 @@ local function draw(bufnr, force)
     if not diagnostics or lnum >= vim.api.nvim_buf_line_count(bufnr) then
         return
     end
+    -- The placeholders of a completed call (`Printf(format string, …)`)
+    -- are not Go yet: the messages wait until the snippet is done.
+    if vim.snippet and vim.snippet.active() then
+        drawn[bufnr] = nil
+        return
+    end
     -- nvim_win_call hands back one value.
     local view = vim.api.nvim_win_call(win, function()
         return {
@@ -345,6 +351,33 @@ function M.setup(user_opts)
         callback = function(event)
             if buffers[event.buf] then
                 draw(event.buf, false)
+            end
+        end,
+    })
+    -- A snippet becomes active after the cursor has moved into its first
+    -- placeholder (Select mode), and ends with a mode change too; the
+    -- session flips after the ModeChanged event itself, so the redraw is
+    -- scheduled behind it and the guard above sees the current state.
+    vim.api.nvim_create_autocmd("ModeChanged", {
+        group = group,
+        callback = function(event)
+            if buffers[event.buf] then
+                vim.schedule(function()
+                    if buffers[event.buf] and vim.api.nvim_buf_is_valid(event.buf) then
+                        draw(event.buf, true)
+                    end
+                end)
+            end
+        end,
+    })
+    -- init.lua ends the snippet on Esc and says so.
+    vim.api.nvim_create_autocmd("User", {
+        group = group,
+        pattern = "PlaceholdersDone",
+        callback = function()
+            local bufnr = vim.api.nvim_get_current_buf()
+            if buffers[bufnr] then
+                draw(bufnr, true)
             end
         end,
     })

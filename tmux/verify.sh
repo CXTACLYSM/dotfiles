@@ -52,6 +52,18 @@ tmux -L "$socket" -f /dev/null new-session -d -s probe -x 120 -y 30
 tmux -L "$socket" source-file "$here/tmux.conf"
 right="$(tmux -L "$socket" show -gv status-right)"
 [[ "$right" == *git-status.sh* ]] || { echo "status-right without git-status.sh: $right" >&2; exit 1; }
+# The session of a task is "project@branch": the project in its own plate,
+# the branch in a second one; a plain session has one plate. The current
+# window is a plate without the underline tmux adds by default; the index
+# of a window is dimmer than its name.
+tmux -L "$socket" new-session -d -s 'proj@TASK-1' -x 120 -y 30
+left="$(tmux -L "$socket" display-message -p -t 'proj@TASK-1' '#{E:status-left}')"
+[[ "$left" == *" proj #[default]#[fg=#b4befe,bg=#313244] @TASK-1 #[default]"* ]] || { echo "status-left of a task session: $left" >&2; exit 1; }
+left="$(tmux -L "$socket" display-message -p -t probe '#{E:status-left}')"
+[[ "$left" == *" probe #[default] "* && "$left" != *"@"* ]] || { echo "status-left of a plain session: $left" >&2; exit 1; }
+tmux -L "$socket" kill-session -t 'proj@TASK-1'
+[[ "$(tmux -L "$socket" show -gv window-status-current-style)" == default ]] || { echo "the current window is underlined" >&2; exit 1; }
+[[ "$(tmux -L "$socket" show -gv window-status-format)" == *'#[fg=#6c7086]#I #[fg=#a6adc8]#W'* ]] || { echo "window index is not dimmed" >&2; exit 1; }
 keys="$(tmux -L "$socket" list-keys -T prefix)"
 [[ "$keys" == *" G "*gitview* ]] || { echo "prefix G is not bound to gitview" >&2; exit 1; }
 hooks="$(tmux -L "$socket" show-hooks -g | grep -c 'dev -s -q')"

@@ -11,6 +11,24 @@ local function keys(value)
     vim.wait(50)
 end
 
+-- Enter with the completion menu: a selected item is accepted (Ctrl-y, no
+-- line break), nothing selected — Enter.
+do
+    local pumvisible, complete_info = vim.fn.pumvisible, vim.fn.complete_info
+    local selected = 0
+    vim.fn.pumvisible = function()
+        return 1
+    end
+    vim.fn.complete_info = function()
+        return { selected = selected }
+    end
+    assert(pairer.enter() == "<C-y>", "a selected item is accepted without a line break")
+    selected = -1
+    assert(pairer.enter() == "<CR>", "nothing selected: Enter")
+    vim.fn.pumvisible, vim.fn.complete_info = pumvisible, complete_info
+    print("PAIRS_MENU_ENTER_OK")
+end
+
 local function reset(line, col)
     vim.cmd("enew!")
     vim.api.nvim_buf_set_lines(0, 0, -1, false, { line or "" })

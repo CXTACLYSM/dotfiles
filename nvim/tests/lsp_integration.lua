@@ -130,7 +130,16 @@ for _, event in ipairs({ "TextChangedI", "CompleteDone", "InsertLeave" }) do
     assert(retrigger_events[event], "completion re-trigger autocmd missing: " .. event)
 end
 assert(require("completion_retrigger").should_retrigger("\tfmt.Pri") == true, "member re-trigger predicate")
-assert(require("completion_retrigger").should_retrigger("\tfmt.") == false, "bare dot must stay quiet")
+assert(select(2, require("completion_retrigger").should_retrigger("\tfmt.")) == "member",
+    "the bare dot opens the menu of the package")
+-- The arguments of a completed call come as placeholders, name and type.
+assert(client.settings.gopls.usePlaceholders == true, "gopls usePlaceholders")
+-- The signature line above a call is attached to the buffer.
+local signature_events = {}
+for _, autocmd in ipairs(vim.api.nvim_get_autocmds({ group = "call_signature_" .. bufnr })) do
+    signature_events[autocmd.event] = true
+end
+assert(signature_events.CursorMovedI and signature_events.InsertLeave, "call signature autocmds")
 -- The dot is no longer a native trigger: the module owns it.
 assert(vim.deep_equal(client.server_capabilities.completionProvider.triggerCharacters, {}),
     "server trigger characters must be taken over: " .. vim.inspect(client.server_capabilities.completionProvider.triggerCharacters))

@@ -9,8 +9,11 @@
 -- changes in Insert mode while no menu is visible: a member-access context
 -- such as `m.S` needs `member_min_length` characters after the dot, bare
 -- identifiers `keyword_min_length`, argument and field positions
--- `argument_min_length`. The native handler keeps one job: re-requesting an
--- incomplete list while the menu is open.
+-- `argument_min_length`. The bare dot itself is probed: the server is
+-- asked quietly, and the menu opens at once when the owner has methods or
+-- fields (a struct, an interface, a value), not for a package. The native
+-- handler keeps one job: re-requesting an incomplete list while the menu
+-- is open.
 
 local M = {}
 
@@ -29,6 +32,11 @@ M.defaults = {
     -- Characters typed after a trigger character before the menu opens:
     -- 1 keeps `fmt.` quiet until `fmt.P`; 0 opens on the dot itself.
     member_min_length = 1,
+    -- On the bare dot the server is asked quietly, and the menu opens at
+    -- once when the owner has methods or fields — a struct, an interface,
+    -- a value (`o.` lists its fields and methods); a package (`fmt.`)
+    -- waits for the first letter as above.
+    probe_members = true,
     -- Minimum identifier length to trigger without a preceding trigger
     -- character; nil keeps bare identifiers manual (Ctrl-Space).
     keyword_min_length = nil,
@@ -59,6 +67,9 @@ function M.should_retrigger(before_cursor, opts, trigger_chars)
                 if #word >= (opts.member_min_length or 0) then
                     return true, "member"
                 end
+                if #word == 0 and opts.probe_members then
+                    return true, "probe"
+                end
             end
             return false
         end
@@ -85,14 +96,31 @@ function M.should_retrigger(before_cursor, opts, trigger_chars)
     return false
 end
 
--- Delay for a re-trigger reason: member access stays immediate, bare
--- identifiers and import paths wait for a pause in typing.
+-- Delay for a re-trigger reason: member access and the probe of a dot stay
+-- immediate, bare identifiers and import paths wait for a pause in typing.
 function M.delay_for(reason, opts)
     opts = opts or M.opts
-    if reason == "member" then
+    if reason == "member" or reason == "probe" then
         return opts.debounce_ms
     end
     return opts.keyword_debounce_ms or opts.debounce_ms
+end
+
+-- Kinds of a completion item that make the owner of a dot an object:
+-- its methods and fields. A package offers functions, types and values.
+local member_kinds = {}
+for _, name in ipairs({ "Method", "Field", "Property" }) do
+    member_kinds[vim.lsp.protocol.CompletionItemKind[name]] = true
+end
+
+-- Whether a completion answer lists methods or fields.
+function M.has_members(items)
+    for _, item in ipairs(items or {}) do
+        if member_kinds[item.kind] then
+            return true
+        end
+    end
+    return false
 end
 
 local function line_before_cursor()
@@ -138,18 +166,49 @@ local function stop_timer(entry)
     end
 end
 
-local function request(bufnr)
-    if vim.api.nvim_get_current_buf() ~= bufnr or vim.fn.mode() ~= "i" then
+-- Still in Insert mode in `bufnr`, no menu open: the moment a request may
+-- be sent or its answer shown.
+local function ready(bufnr)
+    return vim.api.nvim_get_current_buf() == bufnr and vim.fn.mode() == "i" and vim.fn.pumvisible() == 0
+end
+
+-- The probe of a bare dot: the server is asked for the completion, and
+-- the menu opens (the native request) only when the answer has methods
+-- or fields and nothing was typed meanwhile.
+local function probe(bufnr, entry)
+    local client = entry and entry.client
+    if not client or not ready(bufnr) then
         return
     end
-    if vim.fn.pumvisible() ~= 0 then
+    local params = vim.lsp.util.make_position_params(0, client.offset_encoding)
+    local before = line_before_cursor()
+    local tick = vim.api.nvim_buf_get_changedtick(bufnr)
+    client:request("textDocument/completion", params, function(err, result)
+        local items = not err and result and (result.items or result) or nil
+        if not M.has_members(items) or not ready(bufnr) then
+            return
+        end
+        if vim.api.nvim_buf_get_changedtick(bufnr) ~= tick or line_before_cursor() ~= before then
+            return
+        end
+        vim.lsp.completion.get()
+    end, bufnr)
+end
+
+local function request(bufnr)
+    if not ready(bufnr) then
         return
     end
     -- The line may have changed while the timer ran; decide on what is
     -- there now, not on what was there when the timer started.
     local entry = state[bufnr]
     local trigger_chars = entry and entry.trigger_chars or M.opts.trigger_chars
-    if not M.should_retrigger(line_before_cursor(), M.opts, trigger_chars) then
+    local should, reason = M.should_retrigger(line_before_cursor(), M.opts, trigger_chars)
+    if not should then
+        return
+    end
+    if reason == "probe" then
+        probe(bufnr, entry)
         return
     end
     vim.lsp.completion.get()
@@ -208,6 +267,7 @@ end
 -- Attach to a buffer for a client that supports completion.
 function M.attach(bufnr, client)
     local entry = buffer_state(bufnr)
+    entry.client = client
     local server_triggers = M.take_over_triggers(client)
     for _, char in ipairs(vim.list_extend(vim.deepcopy(M.opts.trigger_chars), server_triggers)) do
         if not vim.tbl_contains(entry.trigger_chars, char) then

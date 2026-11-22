@@ -11,8 +11,20 @@ local function expect(before, want, label)
     return reason
 end
 
--- Member access needs one character after the dot by default.
-expect("\tm.", false, "bare dot stays quiet")
+-- Member access needs one character after the dot by default; the bare
+-- dot is probed (the menu opens from the answer when the owner has methods
+-- or fields), unless the probe is off.
+assert(expect("\tm.", true, "bare dot is probed") == "probe")
+local no_probe = vim.tbl_deep_extend("force", retrigger.defaults, { probe_members = false })
+assert(retrigger.should_retrigger("\tm.", no_probe, triggers) == false, "bare dot stays quiet without the probe")
+assert(retrigger.should_retrigger("\tx := 1.", opts, triggers) == false, "a float literal is not probed")
+assert(retrigger.delay_for("probe", { debounce_ms = 60, keyword_debounce_ms = 400 }) == 60, "the probe is immediate")
+local kinds = vim.lsp.protocol.CompletionItemKind
+assert(retrigger.has_members({ { kind = kinds.Function }, { kind = kinds.Field } }), "a field makes an object")
+assert(retrigger.has_members({ { kind = kinds.Method } }), "a method makes an object")
+assert(not retrigger.has_members({ { kind = kinds.Function }, { kind = kinds.Struct }, { kind = kinds.Constant } }),
+    "a package: functions, types, values")
+assert(not retrigger.has_members(nil) and not retrigger.has_members({}), "no answer, no menu")
 assert(expect("\tm.S", true, "one character after the dot") == "member")
 assert(expect("\tm.Sa", true, "partial member") == "member")
 local on_dot = vim.tbl_deep_extend("force", retrigger.defaults, { member_min_length = 0 })
@@ -70,10 +82,11 @@ assert(retrigger.should_retrigger("\tpkg.x", opts, entry.trigger_chars) == true,
 -- A pending identifier request is cancelled by the next change when that
 -- change no longer warrants one: `fmt` then `.` must not open the full
 -- member list at the bare dot.
-retrigger.setup({ keyword_min_length = 2, keyword_debounce_ms = 400, member_min_length = 1 })
+retrigger.setup({ keyword_min_length = 2, keyword_debounce_ms = 400, member_min_length = 1, probe_members = false })
 vim.cmd("enew!")
 local timer_buf = vim.api.nvim_get_current_buf()
-retrigger.attach(timer_buf, { id = 9, server_capabilities = { completionProvider = { triggerCharacters = { "." } } } })
+local attached = retrigger.attach(timer_buf, { id = 9, server_capabilities = { completionProvider = { triggerCharacters = { "." } } } })
+assert(attached.client and attached.client.id == 9, "the client is kept for the probe")
 vim.cmd("startinsert")
 local function type_line(text)
     vim.api.nvim_buf_set_lines(timer_buf, 0, -1, false, { text })
@@ -88,6 +101,12 @@ type_line("\tfmt.P")
 assert(retrigger.pending(timer_buf), "one character after the dot schedules a member request")
 type_line("\tfmt.")
 assert(not retrigger.pending(timer_buf), "Backspace to the bare dot cancels it again")
+-- With the probe on, the bare dot schedules the quiet request instead.
+retrigger.setup({ keyword_min_length = 2, keyword_debounce_ms = 400, member_min_length = 1 })
+type_line("\to.")
+assert(retrigger.pending(timer_buf), "the bare dot schedules the probe")
+type_line("\to")
+assert(not retrigger.pending(timer_buf), "Backspace to one letter: below the identifier minimum, the probe cancelled")
 vim.cmd("stopinsert")
 
 print("COMPLETION_RETRIGGER_SMOKE_OK")

@@ -26,16 +26,17 @@ M.opts = {
     max_dirs = 3,
     -- function(path) → the pin number of a file, or nil.
     pin = nil,
-    -- Icons by the kind of a scope (Nerd Font, nf-md). nil: none.
+    -- Icons by the kind of a scope: the set of lua/icons.lua, the same as
+    -- in the completion menu and the symbol pickers. nil: none.
     icons = {
-        ["function"] = "\u{f0295}",
-        method = "\u{f01a7}",
-        closure = "\u{f0295}",
-        type = "\u{f0645}",
-        interface = "\u{f0730}",
-        field = "\u{f0722}",
-        constant = "\u{f03ff}",
-        variable = "\u{f002b}",
+        ["function"] = require("icons").kind["function"],
+        method = require("icons").kind.method,
+        closure = require("icons").kind["function"],
+        type = require("icons").kind.struct,
+        interface = require("icons").kind.interface,
+        field = require("icons").kind.field,
+        constant = require("icons").kind.constant,
+        variable = require("icons").kind.variable,
     },
 }
 

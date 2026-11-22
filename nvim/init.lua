@@ -975,8 +975,9 @@ map("n", "<leader>cT", change_tree.toggle_auto, {
 
 local fzf = require("fzf-lua")
 
--- The symbol icons are fzf-lua's Nerd Font glyphs (the JetBrainsMono NF of
--- the iTerm2 profile); the kind name stays next to the glyph.
+-- The symbol icons are the set of lua/icons.lua — the glyphs of the window
+-- bar and the completion menu (JetBrainsMono NF of the iTerm2 profile);
+-- the kind name stays next to the glyph.
 -- Every picker has a normal mode as Space f (lua/picker_mode.lua): Esc
 -- leaves typing, j / k move, l or Enter opens, q or Esc closes, i types
 -- again. The lists (Space ss, Space b, grr, Space p, Space ,) start in
@@ -1002,6 +1003,7 @@ fzf.setup({
         symbols = {
             -- 1 = "<icon> <kind>": the word next to the glyph.
             symbol_style = 1,
+            symbol_icons = require("icons").lsp_symbols,
         },
     },
 })
@@ -1155,6 +1157,10 @@ require("go_lsp").setup({
         gopls = {
             gofumpt = true,
             staticcheck = true,
+            -- A completed call comes with its arguments as placeholders,
+            -- name and type: `Printf(format string, a ...any)`, the first
+            -- selected; Tab / S-Tab walk them (vim.snippet).
+            usePlaceholders = true,
 
             -- Large-repository scope. Vendored and generated trees are not
             -- workspace packages; excluding them keeps the initial load and
@@ -1218,10 +1224,11 @@ for _, lhs in ipairs({ "[u", "[r" }) do
     map({ "n", "x" }, lhs, usages.previous, { desc = "Previous use of the name under the cursor" })
 end
 
--- The completion menu never opens on zero typed characters. The re-trigger
--- module takes the `.` trigger away from the native autotrigger and opens
--- the menu itself: members from the first character after the dot
--- (`fmt.P`, not `fmt.`), bare identifiers (locals, types, functions,
+-- The re-trigger module takes the `.` trigger away from the native
+-- autotrigger and opens the menu itself: on every dot at once (`o.` lists
+-- the fields and methods, `json.` the package, 12 rows and the fuzzy
+-- narrowing from the first letter; member_min_length = 1 would keep a
+-- package quiet until `fmt.P`), bare identifiers (locals, types, functions,
 -- keywords, unimported packages) from the second, one character in argument
 -- and field positions (`Task{I`), import paths inside `import` strings. It
 -- also reopens the menu after a typo or Backspace (`m.Sav` -> Backspace ->
@@ -1234,10 +1241,70 @@ end
 -- "hint when I stop to think" mode.
 local completion_retrigger = require("completion_retrigger")
 
+-- The look of the menu (lua/completion_look.lua): the kind as an icon in
+-- the colour of its kind, the signature without `func` and cut to a
+-- column, the documentation popup wrapped at words, 12 rows at most.
+local completion_look = require("completion_look")
+
+completion_look.setup()
+
+-- Esc with the menu open: the first press switches to choosing (j / k walk
+-- the items, Enter accepts), the second closes the menu and leaves Insert
+-- (lua/completion_keys.lua).
+require("completion_keys").setup()
+
+-- The arguments of a completed call are placeholders (gopls
+-- usePlaceholders): `Printf(format string, a ...any)` with the first one
+-- selected, typing replaces it; Tab / S-Tab go to the next / previous one
+-- while the snippet is active, otherwise they are the ordinary keys.
+for key, direction in pairs({ ["<Tab>"] = 1, ["<S-Tab>"] = -1 }) do
+    map({ "i", "s" }, key, function()
+        if vim.snippet.active({ direction = direction }) then
+            vim.snippet.jump(direction)
+            return ""
+        end
+        return key
+    end, { expr = true, desc = direction == 1 and "Next placeholder" or "Previous placeholder" })
+end
+
+-- Esc ends the placeholders: what is in the parentheses is the argument
+-- list as it stands. nvim ends the snippet session itself on the way to
+-- Normal mode but tells nobody, so the end is announced here as the User
+-- event PlaceholdersDone: the diagnostics of the line come back
+-- (lua/cursor_diagnostic.lua), the signature line goes
+-- (lua/call_signature.lua). Expanding a snippet passes through Normal mode
+-- on its way to selecting the first placeholder, so the check waits a
+-- moment and looks at the mode again.
+vim.api.nvim_create_autocmd("ModeChanged", {
+    group = vim.api.nvim_create_augroup("snippet_keys", { clear = true }),
+    pattern = "*:n",
+    callback = function()
+        if not vim.snippet.active() then
+            return
+        end
+        vim.defer_fn(function()
+            if vim.fn.mode() ~= "n" then
+                return
+            end
+            if vim.snippet.active() then
+                vim.snippet.stop()
+            end
+            vim.api.nvim_exec_autocmds("User", { pattern = "PlaceholdersDone" })
+        end, 50)
+    end,
+})
+
+-- The signature of the call the cursor is in, a line above it while the
+-- arguments are typed, the current parameter highlighted
+-- (lua/call_signature.lua); Ctrl-S is the full native signature help.
+local call_signature = require("call_signature")
+
+call_signature.setup()
+
 completion_retrigger.setup({
     debounce_ms = 60,
     keyword_debounce_ms = 400,
-    member_min_length = 1,
+    member_min_length = 0,
     keyword_min_length = 2,
 })
 
@@ -1247,6 +1314,10 @@ vim.api.nvim_create_autocmd("LspAttach", {
             vim.lsp.get_client_by_id(event.data.client_id)
         )
 
+        if client:supports_method("textDocument/signatureHelp") then
+            call_signature.attach(event.buf, client)
+        end
+
         if client:supports_method("textDocument/completion") then
             -- attach() first: it removes the server trigger characters that
             -- enable() would otherwise hand to the native autotrigger.
@@ -1255,7 +1326,7 @@ vim.api.nvim_create_autocmd("LspAttach", {
                 true,
                 client.id,
                 event.buf,
-                { autotrigger = true }
+                { autotrigger = true, convert = completion_look.convert }
             )
         end
 

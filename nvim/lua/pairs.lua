@@ -81,8 +81,14 @@ function M.backspace()
 end
 
 function M.enter()
-    -- Keep the native completion-menu action unchanged.
+    -- With the completion menu: a selected item is taken as Ctrl-y does —
+    -- no line break, and the placeholders of a call expand (the native
+    -- Enter would end the completion and break the line); nothing selected
+    -- (noselect, still typing) — the menu goes and Enter is Enter.
     if vim.fn.pumvisible() == 1 then
+        if vim.fn.complete_info({ "selected" }).selected ~= -1 then
+            return "<C-y>"
+        end
         return "<CR>"
     end
 

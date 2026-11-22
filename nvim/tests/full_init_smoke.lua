@@ -314,11 +314,12 @@ assert(require("big_file").opts.max_lines == 10000, "big file threshold")
 local retrigger = require("completion_retrigger").opts
 assert(retrigger.keyword_min_length == 2, "keyword completion from the 2nd character")
 assert(retrigger.keyword_debounce_ms == 400, "keyword pause")
-assert(retrigger.member_min_length == 1, "member completion from the 1st character")
+assert(retrigger.member_min_length == 0, "the menu opens on the dot itself")
 
 local symbols = require("fzf-lua.config").globals.lsp.symbols
 assert(symbols.symbol_style == 1, "icon plus kind name")
-assert(symbols.symbol_icons.Function == "󰊕" and symbols.symbol_icons.Struct == "󰆼", "fzf-lua's Nerd Font symbol icons")
+assert(symbols.symbol_icons.Function == require("icons").kind["function"]
+    and symbols.symbol_icons.Struct == require("icons").kind.struct, "the symbol icons of lua/icons.lua")
 for kind, icon in pairs(symbols.symbol_icons) do
     assert(vim.fn.strdisplaywidth(icon) == 1, "one column for " .. kind)
     for _, code in ipairs(vim.fn.str2list(icon)) do
@@ -364,6 +365,31 @@ local tree_window = neotree.filesystem.window
 -- neo-tree keeps the filter box keys in lower case.
 assert(tree_window.mappings["<C-h>"] == "clear_filter" and tree_window.fuzzy_finder_mappings["<c-h>"] == "close_clear_filter"
     and tree_window.fuzzy_finder_mappings["<esc>"] == "close", "Ctrl-h drops the filter, the other filter keys stay")
+
+-- Esc with the menu: choose, then close; the icon first in a menu row.
+assert(vim.fn.maparg("<Esc>", "i", false, true).desc == "Choose from the menu / close it / leave Insert", "Esc in Insert")
+assert(vim.o.completeitemalign == "kind,abbr,menu", "the kind icon first")
+
+-- Tab / S-Tab walk the placeholders of a completed call in Insert and
+-- Select mode; gopls is asked for them.
+for _, mode in ipairs({ "i", "s" }) do
+    assert(vim.fn.maparg("<Tab>", mode, false, true).desc == "Next placeholder", "Tab in " .. mode)
+    assert(vim.fn.maparg("<S-Tab>", mode, false, true).desc == "Previous placeholder", "S-Tab in " .. mode)
+end
+assert(vim.fn.maparg("<Tab>", "i", false, true).expr == 1, "Tab stays Tab outside a snippet")
+local snippet_end = vim.api.nvim_get_autocmds({ group = "snippet_keys", event = "ModeChanged" })
+assert(#snippet_end == 1 and snippet_end[1].pattern == "*:n", "Esc ends the placeholders")
+
+-- One set of icons: the symbol pickers, the window bar and the completion
+-- menu draw a method with the same glyph.
+local icons = require("icons")
+local fzf_symbols = require("fzf-lua.config").globals.lsp.symbols.symbol_icons
+assert(fzf_symbols.Method == icons.kind.method and fzf_symbols.Struct == icons.kind.struct
+    and fzf_symbols.Function == icons.kind["function"] and fzf_symbols.Field == icons.kind.field, "fzf symbols from lua/icons.lua")
+assert(require("breadcrumbs").opts.icons.method == icons.kind.method
+    and require("breadcrumbs").opts.icons.type == icons.kind.struct, "the window bar from lua/icons.lua")
+assert(require("completion_look").convert({ label = "m", kind = vim.lsp.protocol.CompletionItemKind.Method }).kind == icons.kind.method,
+    "the completion menu from lua/icons.lua")
 
 -- Every picker: the normal mode binds and no hiding on Esc.
 local fzf_globals = require("fzf-lua.config").globals
