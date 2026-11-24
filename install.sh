@@ -8,6 +8,11 @@
 #   ./install.sh --check        только проверить состояние
 #   ./install.sh --no-brew      без brew bundle (пакеты уже стоят)
 #   ./install.sh --skip-verify  без прогона go/, nvim/ и tmux/verify.sh (1–2 минуты)
+#   ./install.sh --claude-home=ПУТЬ  каталог Claude Code (settings.json с хуками);
+#                               по умолчанию $CLAUDE_CONFIG_DIR или ~/.claude
+#   ./install.sh --codex-home=ПУТЬ   каталог Codex (hooks.json); по умолчанию
+#                               $CODEX_HOME или ~/.codex — хуки ставятся, когда
+#                               каталог есть или codex в PATH; с флагом — всегда
 #
 # Шаги:
 #   brew    пакеты из Brewfile
@@ -34,12 +39,16 @@ config_home=${XDG_CONFIG_HOME:-$HOME/.config}
 backup_root=$HOME/.local/state/dotfiles/backup-$(date +%Y%m%d-%H%M%S)
 
 mode=install brew_step=1 verify_step=1
+claude_home=${CLAUDE_CONFIG_DIR:-$HOME/.claude}
+codex_home=${CODEX_HOME:-$HOME/.codex} codex_forced=0
 for arg in "$@"; do
   case $arg in
     --dry-run)     mode=dry-run ;;
     --check)       mode=check ;;
     --no-brew)     brew_step=0 ;;
     --skip-verify) verify_step=0 ;;
+    --claude-home=*) claude_home=${~${arg#*=}} ;;
+    --codex-home=*)  codex_home=${~${arg#*=}}; codex_forced=1 ;;
     -h|--help)     sed -n '2,/^$/s/^# \{0,1\}//p' $0; exit 0 ;;
     *)             print -u2 "install.sh: неизвестный флаг $arg (--help)"; exit 2 ;;
   esac
@@ -264,6 +273,29 @@ ensure_line $HOME/.tmux.conf "source-file ~/.config/dotfiles/tmux/tmux.conf"
 for tool in dev devlog projects; do
   link $repo/tmux/$tool $HOME/.local/bin/$tool
 done
+# Хуки агентов → метка «агент ждёт» на окне tmux (tmux/attention):
+# Claude Code — ~/.claude/settings.json (перечитывает сам), Codex —
+# ~/.codex/hooks.json, если Codex есть на машине (после установки его хуки
+# надо подтвердить: /hooks в Codex). Чужие хуки и настройки не трогаются.
+agent_hooks() {
+  local agent=$1 file=$2 name=$3
+  if $repo/tmux/agent-hooks --check $agent $file >/dev/null 2>&1; then
+    [[ $mode == check ]] && ok "хуки $name → tmux в $(short $file)"
+  elif [[ $mode == check ]]; then
+    bad "в $(short $file) нет хуков tmux/attention — запусти install.sh"
+  else
+    [[ -f $file && $mode != dry-run ]] && { mkdir -p $backup_root; cp -p $file $backup_root/${file:t:r}-$agent.json.orig }
+    [[ $mode == dry-run ]] || mkdir -p ${file:h}
+    act "хуки $name → tmux (attention) в $(short $file)" $repo/tmux/agent-hooks $agent $file
+  fi
+}
+agent_hooks claude $claude_home/settings.json "Claude Code"
+if (( codex_forced )) || (( $+commands[codex] )) || [[ -d $codex_home ]]; then
+  agent_hooks codex $codex_home/hooks.json "Codex"
+  [[ $mode == check ]] || manual+='Codex: подтвердить хуки tmux — /hooks в Codex (недоверенные хуки он пропускает)'
+elif [[ $mode == check ]]; then
+  info "Codex не установлен ($(short $codex_home) нет, codex не в PATH) — его хуки не нужны; --codex-home=ПУТЬ задаёт каталог"
+fi
 if [[ $mode != check ]]; then
   if (( verify_step )); then
     tmux_verify_log=$HOME/.local/state/dotfiles/verify-tmux.log

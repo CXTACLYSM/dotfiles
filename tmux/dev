@@ -353,6 +353,8 @@ snapshot() {
   print -r -- "server$tab$start" > $tmp
   for line in $sessions; do
     name=${line%%$tab*}
+    # Сессия вида (tmux/view) — временная сборка чужих окон, не проект.
+    [[ $name == view ]] && continue
     live[$name]=1
     active=$(tmux display-message -p -t "=$name:" '#{window_name}' 2>/dev/null)
     print -r -- "session$tab$line$tab$active${tab}live" >> $tmp

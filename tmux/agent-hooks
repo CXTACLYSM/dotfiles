@@ -1,0 +1,84 @@
+#!/bin/zsh
+# Хуки агентов, которые сообщают tmux состояние агента (tmux/attention):
+# wait — нужен человек, busy — работа идёт, done — ход закончен, clear —
+# сессия закрыта. Два агента, один формат (JSON «hooks»: событие →
+# записи с командами):
+#
+#   claude   ~/.claude/settings.json — Claude Code; PermissionRequest и
+#            Notification (permission_prompt, elicitation_dialog,
+#            agent_needs_input) → wait; UserPromptSubmit, PreToolUse,
+#            SessionStart → busy; Stop → done; SessionEnd → clear.
+#            Настройки перечитываются на лету.
+#   codex    ~/.codex/hooks.json — Codex CLI; те же события без
+#            Notification, плюс Interrupt → done. Codex исполняет только
+#            доверенные хуки: после установки — /hooks в Codex, подтвердить.
+#
+#   agent-hooks АГЕНТ ФАЙЛ           вписать хуки (файл создаётся, если нет);
+#                                    свои прежние записи заменяются, чужие
+#                                    хуки и остальные настройки не трогаются
+#   agent-hooks --check АГЕНТ ФАЙЛ   0, если все хуки на месте, иначе 1 и список
+#   agent-hooks --print АГЕНТ        показать блок хуков (JSON)
+#
+# Свои записи узнаются по команде, содержащей «tmux/attention»: так
+# повторный запуск идемпотентен, а правка путей обновляет старые записи.
+
+emulate -L zsh
+path=(/opt/homebrew/bin /usr/local/bin $path)
+typeset -U path
+
+attention='~/.config/dotfiles/tmux/attention'
+
+# Событие → состояние и (не для всех) matcher, по агенту.
+hooks_json() {
+  local agent=$1
+  jq -n --arg a "$attention" --arg agent "$agent" '
+    def hook($state): { hooks: [ { type: "command", command: ($a + " " + $state) } ] };
+    {
+      SessionStart:      [ hook("busy") ],
+      UserPromptSubmit:  [ hook("busy") ],
+      PreToolUse:        [ hook("busy") ],
+      PermissionRequest: [ hook("wait") ],
+      Stop:              [ hook("done") ],
+      SessionEnd:        [ hook("clear") ]
+    }
+    + (if $agent == "claude" then
+        { Notification: [ hook("wait") + { matcher: "permission_prompt|elicitation_dialog|agent_needs_input" } ] }
+       else
+        { Interrupt: [ hook("done") ] }
+       end)'
+}
+
+mode=write
+case ${1-} in
+  --check) mode=check; shift ;;
+  --print) mode=print; shift ;;
+esac
+agent=${1-}
+[[ $agent == claude || $agent == codex ]] || { print -u2 -r -- "agent-hooks: агент claude или codex, не «$agent»"; exit 2 }
+ours=$(hooks_json $agent)
+[[ $mode == print ]] && { print -r -- "$ours"; exit 0 }
+file=${2-}
+[[ -n $file ]] || { print -u2 -r -- "agent-hooks: нужен путь к файлу хуков"; exit 2 }
+
+if [[ $mode == check ]]; then
+  [[ -f $file ]] || { print -r -- "нет файла $file"; exit 1 }
+  missing=$(jq -r --argjson ours "$ours" '
+    (.hooks // {}) as $have
+    | $ours | to_entries[]
+    | .key as $event
+    | .value[0].hooks[0].command as $want
+    | select(([ $have[$event] // [] | .[] | .hooks[]? | .command ] | index($want)) == null)
+    | $event' "$file") || exit 1
+  [[ -z $missing ]] && exit 0
+  print -r -- "нет хуков: ${(f)missing}"
+  exit 1
+fi
+
+[[ -f $file ]] || print -r -- '{}' > $file
+tmp=$file.agent-hooks.$$
+jq --argjson ours "$ours" '
+  .hooks = ((.hooks // {}) as $have
+    | reduce ($ours | to_entries[]) as $e ($have;
+        .[$e.key] = ((.[$e.key] // [])
+          | map(select(([.hooks[]? | .command | select(contains("tmux/attention"))] | length) == 0)))
+          + $e.value))' "$file" > $tmp && mv -f $tmp $file

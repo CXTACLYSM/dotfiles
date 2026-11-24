@@ -1,0 +1,69 @@
+#!/bin/zsh
+# Метка «агент ждёт» на окне tmux. Harness (Claude Code и подобные) из
+# своих хуков сообщает, что с ним: ждёт подтверждения, закончил ход,
+# работает. Метка — оконная опция @attention; её показывают дерево
+# сессий (prefix s), статус-бар текущей сессии и счётчик справа.
+#
+#   attention wait|done|busy [-t ЦЕЛЬ]  состояние окна панели $TMUX_PANE
+#                                       (хук запущен внутри панели) или ЦЕЛИ
+#   attention clear [-t ЦЕЛЬ]           снять метку (агент закрыт)
+#   attention seen [-t ЦЕЛЬ]            вход в окно: done гаснет, wait остаётся —
+#                                       подтверждение ещё не дано
+#   attention status                    сегмент status-right: «? N» — сколько
+#                                       окон ждут подтверждения во всех сессиях;
+#                                       пусто, если ни одно
+#   attention list                      окна с метками: сессия, окно, состояние
+#                                       (TSV; для проверок и списков)
+#
+# Вне tmux (нет $TMUX_PANE и -t) команда ничего не делает и не шумит: тот
+# же хук работает и в терминале без tmux. Ввод (JSON хука) не читается.
+#
+# Состояния: wait — нужен человек (разрешение, вопрос); done — ход
+# закончен, есть что прочитать; busy — работает. Снимает wait только сам
+# агент, когда ответ получен (следующий хук), не вход в окно.
+
+emulate -L zsh
+path=(/opt/homebrew/bin /usr/local/bin $path)
+typeset -U path
+
+command=${1-}
+[[ -n $command ]] || { print -u2 -r -- "attention: wait|done|busy|clear|seen|status|list"; exit 2 }
+shift
+
+target=${TMUX_PANE-}
+while (( $# )); do
+  case $1 in
+    -t) target=$2; shift 2 ;;
+    *) print -u2 -r -- "attention: лишний аргумент $1"; exit 2 ;;
+  esac
+done
+
+case $command in
+  wait|done|busy)
+    [[ -n $target ]] || exit 0
+    tmux set-option -w -t "$target" @attention $command 2>/dev/null || exit 0
+    # The status bar at once, not at the next status-interval; no client
+    # attached (tests, a detached server) is not an error.
+    tmux refresh-client -S 2>/dev/null || true
+    ;;
+  clear)
+    [[ -n $target ]] || exit 0
+    tmux set-option -wu -t "$target" @attention 2>/dev/null || exit 0
+    tmux refresh-client -S 2>/dev/null || true
+    ;;
+  seen)
+    [[ -n $target ]] || exit 0
+    if [[ $(tmux show-options -wv -t "$target" @attention 2>/dev/null) == done ]]; then
+      tmux set-option -wu -t "$target" @attention 2>/dev/null
+    fi
+    ;;
+  status)
+    waiting=$(tmux list-windows -a -F '#{@attention}' 2>/dev/null | grep -c '^wait$')
+    (( waiting > 0 )) && print -r -- "#[fg=#1e1e2e,bg=#f9e2af,bold] ? $waiting #[default] "
+    ;;
+  list)
+    tmux list-windows -a -F $'#{session_name}\t#{window_name}\t#{@attention}' 2>/dev/null | awk -F'\t' '$3 != ""'
+    ;;
+  *)
+    print -u2 -r -- "attention: неизвестная команда $command"; exit 2 ;;
+esac

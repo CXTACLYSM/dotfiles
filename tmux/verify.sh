@@ -381,4 +381,132 @@ tmux kill-server
 unset XDG_STATE_HOME DEV_SETS DEV_LAYOUTS DEV_PROJECT_ROOTS
 echo "DEV_SESSIONS_OK"
 
+step "attention: an agent waiting for you (prefix s, status bar)"
+attention="$here/attention"
+tmux -L "$socket" kill-server 2>/dev/null || true
+tmux -L "$socket" -f "$here/tmux.conf" new-session -d -s shop -n editor -x 120 -y 24 -c "$work"
+for w in server tests; do tmux -L "$socket" new-window -d -t shop -n "$w" -c "$work"; done
+tmux -L "$socket" new-session -d -s billing -n editor -x 120 -y 24 -c "$work"
+tmux -L "$socket" new-window -d -t billing -n tests -c "$work"
+asock="$(tmux -L "$socket" display -p '#{socket_path}')"
+pane_of() { tmux -L "$socket" display -p -t "$1" '#{pane_id}'; }
+# The hook runs inside the pane: $TMUX_PANE names the window; outside tmux nothing happens.
+TMUX="$asock,0,0" TMUX_PANE="$(pane_of shop:tests)" "$attention" wait
+TMUX="$asock,0,0" TMUX_PANE="$(pane_of shop:editor)" "$attention" done
+TMUX="$asock,0,0" TMUX_PANE="$(pane_of billing:tests)" "$attention" wait
+same "marks on the windows" "$(TMUX="$asock,0,0" "$attention" list | sort | tr '\t\n' ' ;')" "billing tests wait;shop editor done;shop tests wait;"
+( unset TMUX TMUX_PANE; "$attention" wait; ) && echo "  outside tmux: quiet"
+same "the counter of waiting windows" "$(TMUX="$asock,0,0" "$attention" status)" "#[fg=#1e1e2e,bg=#f9e2af,bold] ? 2 #[default] "
+has "the status bar: ? at the waiting window" "$(tmux -L "$socket" display -p -t shop:editor '#{W:#{E:window-status-format}}')" 'tests#[fg=#f9e2af,bold] ?'
+has "the status bar: ✓ at the finished one" "$(tmux -L "$socket" display -p -t shop:editor '#{W:#{E:window-status-format}}')" 'editor#[fg=#a6e3a1] ✓'
+has "status-right counts the waiting windows" "$(tmux -L "$socket" show -gv status-right)" 'attention status'
+tree="$(tmux -L "$socket" list-keys -T prefix s)"
+has "prefix s is the tree with the marks" "$tree" 'choose-tree -Zs -F'
+has "the session line lists the waiting windows" "$tree" '#{W:#{?#{==:#{@attention},wait}'
+same "the session line rendered" "$(tmux -L "$socket" display -p -t shop:editor '#{W:#{?#{==:#{@attention},wait},? #{window_name} ,}}#{W:#{?#{==:#{@attention},done},✓ #{window_name} ,}}')" "? tests ✓ editor "
+# Entering a window: done is seen and goes, wait stays until the agent answers.
+tmux -L "$socket" select-window -t shop:tests
+sleep 0.5
+tmux -L "$socket" select-window -t shop:editor
+sleep 0.7
+same "done gone on entering, wait kept" "$(TMUX="$asock,0,0" "$attention" list | sort | tr '\t\n' ' ;')" "billing tests wait;shop tests wait;"
+TMUX="$asock,0,0" TMUX_PANE="$(pane_of shop:tests)" "$attention" busy
+TMUX="$asock,0,0" TMUX_PANE="$(pane_of billing:tests)" "$attention" clear
+same "busy and clear" "$(TMUX="$asock,0,0" "$attention" list | tr '\t\n' ' ;')" "shop tests busy;"
+same "no counter without waiting windows" "$(TMUX="$asock,0,0" "$attention" status)" ""
+tmux -L "$socket" kill-server
+# The hooks of Claude Code: written once, foreign hooks kept, idempotent.
+settings="$work/claude-settings.json"
+printf '{"theme":"dark","hooks":{"Stop":[{"hooks":[{"type":"command","command":"say done"}]}]}}' > "$settings"
+if "$here/agent-hooks" --check claude "$settings" >/dev/null; then echo "check passed before the hooks were written" >&2; exit 1; fi
+"$here/agent-hooks" claude "$settings"
+"$here/agent-hooks" --check claude "$settings" || { echo "hooks missing after writing" >&2; exit 1; }
+"$here/agent-hooks" claude "$settings"
+same "foreign Stop hook kept, ours once" "$(jq -c '[.hooks.Stop[].hooks[0].command]' "$settings")" '["say done","~/.config/dotfiles/tmux/attention done"]'
+same "the other settings untouched" "$(jq -r .theme "$settings")" "dark"
+same "permission prompts and questions mark wait" "$(jq -r '.hooks.Notification[0].matcher, .hooks.PermissionRequest[0].hooks[0].command' "$settings" | tr '\n' ';')" "permission_prompt|elicitation_dialog|agent_needs_input;~/.config/dotfiles/tmux/attention wait;"
+same "a turn done, a prompt busy, a session end clear" "$(jq -r '.hooks.Stop[1].hooks[0].command, .hooks.UserPromptSubmit[0].hooks[0].command, .hooks.SessionEnd[0].hooks[0].command' "$settings" | sed 's|.*attention ||' | tr '\n' ' ')" "done busy clear "
+# Codex: the same events in ~/.codex/hooks.json, Interrupt instead of Notification; a missing file is created.
+codex_hooks="$work/codex/hooks.json"
+mkdir -p "$work/codex"
+"$here/agent-hooks" codex "$codex_hooks"
+"$here/agent-hooks" --check codex "$codex_hooks" || { echo "codex hooks missing after writing" >&2; exit 1; }
+same "codex events" "$(jq -r '.hooks | keys | join(" ")' "$codex_hooks")" "Interrupt PermissionRequest PreToolUse SessionEnd SessionStart Stop UserPromptSubmit"
+same "codex: approval marks wait, an interrupt ends the turn" "$(jq -r '.hooks.PermissionRequest[0].hooks[0].command, .hooks.Interrupt[0].hooks[0].command' "$codex_hooks" | sed 's|.*attention ||' | tr '\n' ' ')" "wait done "
+if "$here/agent-hooks" --check cursor "$codex_hooks" 2>/dev/null; then echo "an unknown agent must be refused" >&2; exit 1; fi
+echo "ATTENTION_OK"
+
+step "fzf popups: the normal mode of the nvim pickers (j / k, i, Esc)"
+# The binds are fzf transforms that read the prompt; run them as fzf would.
+normal_run() {
+  zsh -c 'source "$1"; key=$2; prompt=$3
+    for ((i = 1; i <= ${#fzf_normal_binds}; i += 2)); do
+      b=${fzf_normal_binds[i+1]}; [[ $b == "$key:"* ]] && bind=${b#$key:}
+    done
+    FZF_PROMPT=$prompt zsh -c "${bind#transform:}"' _ "$here/fzf-normal.zsh" "$1" "$2"
+}
+same "the list opens in the normal mode" "$(zsh -c 'source "$1"; fzf_normal_prompt вид' _ "$here/fzf-normal.zsh")" "вид ·N › "
+same "j moves in the normal mode" "$(normal_run j 'вид ·N › ')" "down"
+same "j types while typing" "$(normal_run j 'вид › ')" "put(j)"
+same "k, g, l, q, h" "$(normal_run k 'вид ·N › ') $(normal_run g 'вид ·N › ') $(normal_run l 'вид ·N › ') $(normal_run q 'вид ·N › ') [$(normal_run h 'вид ·N › ')]" "up first accept abort []"
+same "Esc leaves typing for the normal mode, the base kept" "$(normal_run esc 'вид › ')" "change-prompt(вид ·N › )"
+same "Esc in the normal mode closes" "$(normal_run esc 'вид ·N › ')" "abort"
+same "i types again" "$(normal_run i 'вид ·N › ')" "change-prompt(вид › )"
+same "i while typing is a letter" "$(normal_run i 'вид › ')" "put(i)"
+same "without a base" "$(normal_run esc '› ') $(normal_run i '·N › ')" "change-prompt(·N › ) change-prompt(› )"
+for picker in view projects; do
+  has "$picker uses the normal mode" "$(cat "$here/$picker")" 'fzf-normal.zsh'
+done
+echo "FZF_NORMAL_OK"
+
+step "view: windows of several sessions on one screen (prefix S)"
+view="$here/view"
+tmux -L "$socket" kill-server 2>/dev/null || true
+tmux -L "$socket" -f "$here/tmux.conf" new-session -d -s shop -n editor -x 120 -y 30 -c "$work"
+for w in server tests; do tmux -L "$socket" new-window -d -t shop -n "$w" -c "$work"; done
+tmux -L "$socket" new-session -d -s billing -n tests -x 120 -y 30 -c "$work"
+tmux -L "$socket" new-session -d -s mono -n editor -x 120 -y 30 -c "$work"
+tmux -L "$socket" split-window -d -h -t mono:editor -c "$work"
+asock="$(tmux -L "$socket" display -p '#{socket_path}')"
+export XDG_STATE_HOME="$work/state"
+TMUX="$asock,0,0" TMUX_PANE="$(pane_of shop:tests)" "$attention" wait
+mono_layout="$(tmux -L "$socket" display -p -t mono:editor '#{window_layout}')"
+has "prefix S toggles the view" "$(tmux -L "$socket" list-keys -T prefix S)" 'view toggle'
+has "status-right names the view" "$(tmux -L "$socket" show -gv status-right)" 'view status'
+same "no view: no badge" "$(TMUX="$asock,0,0" "$view" status)" ""
+TMUX="$asock,0,0" "$view" make shop:tests billing:tests mono:editor
+same "the view holds the panes of the three windows" "$(tmux -L "$socket" list-panes -t view -F '#{@view_origin}' | sort | tr '\n' ' ')" "billing:tests mono:editor mono:editor shop:tests "
+same "the windows left their sessions, a stub keeps a session alive" "$(tmux -L "$socket" list-windows -a -F '#{session_name}:#{window_index}=#{window_name}' | tr '\n' ' ')" "billing:1=· mono:1=· shop:1=editor shop:2=server view:1=view "
+same "the view window names its panes" "$(tmux -L "$socket" show -wv -t view:1 pane-border-status)" "top"
+same "the badge while the view is open" "$(TMUX="$asock,0,0" "$view" status)" "#[fg=#1e1e2e,bg=#89b4fa,bold] view #[default] "
+has "the record of where each window came from" "$(cat "$work/state/dev/view")" "$(printf 'W\t%s\tshop\t3\ttests' "$(tmux -L "$socket" display -p -t view:1.3 '#{@view_origin}' >/dev/null; echo '@2')")"
+if TMUX="$asock,0,0" "$view" make billing:tests 2>/dev/null; then echo "a second view must be refused" >&2; exit 1; fi
+TMUX="$asock,0,0" "$view" back
+same "back: every window in its session at its index, the stubs gone, the view gone" "$(tmux -L "$socket" list-windows -a -F '#{session_name}:#{window_index}=#{window_name}:#{window_panes}' | tr '\n' ' ')" "billing:1=tests:1 mono:1=editor:2 shop:1=editor:1 shop:2=server:1 shop:3=tests:1 "
+same "the layout of a split window is back" "$(tmux -L "$socket" display -p -t mono:editor '#{window_layout}')" "$mono_layout"
+same "the attention mark is back" "$(tmux -L "$socket" show -wv -t shop:tests @attention)" "wait"
+same "no origin marks left on the panes" "$(tmux -L "$socket" list-panes -a -F '#{@view_origin}' | tr -d '\n')" ""
+[[ -f "$work/state/dev/view" ]] && { echo "the record must go with the view" >&2; exit 1; }
+# From the tree: the marks come one by one, the view is built when they stop.
+TMUX="$asock,0,0" "$view" pick shop:tests
+TMUX="$asock,0,0" "$view" pick billing:tests
+sleep 1.2
+same "pick: the view from the tagged windows" "$(tmux -L "$socket" list-panes -t view -F '#{@view_origin}' | sort | tr '\n' ' ')" "billing:tests shop:tests "
+TMUX="$asock,0,0" "$view" back
+same "and back" "$(tmux -L "$socket" list-windows -a -F '#{session_name}:#{window_index}' | tr '\n' ' ')" "billing:1 mono:1 shop:1 shop:2 shop:3 "
+# renumber-windows: the neighbours moved down when a window left; two middle
+# windows of six come back exactly where they were.
+tmux -L "$socket" new-session -d -s six -n editor -x 120 -y 30 -c "$work"
+for w in server tests infra shell git; do tmux -L "$socket" new-window -d -t six -n "$w" -c "$work"; done
+TMUX="$asock,0,0" "$view" make six:tests six:shell
+same "the rest renumbered meanwhile" "$(tmux -L "$socket" list-windows -t six -F '#{window_index}=#{window_name}' | tr '\n' ' ')" "1=editor 2=server 3=infra 4=git "
+TMUX="$asock,0,0" "$view" back
+same "the order of the session is back" "$(tmux -L "$socket" list-windows -t six -F '#{window_index}=#{window_name}' | tr '\n' ' ')" "1=editor 2=server 3=tests 4=infra 5=shell 6=git "
+TMUX="$asock,0,0" "$view" make six:git
+TMUX="$asock,0,0" "$view" back
+same "the last window comes back last" "$(tmux -L "$socket" list-windows -t six -F '#{window_index}=#{window_name}' | tr '\n' ' ')" "1=editor 2=server 3=tests 4=infra 5=shell 6=git "
+unset XDG_STATE_HOME
+tmux -L "$socket" kill-server
+echo "VIEW_OK"
+
 printf '\nTMUX_VERIFY_OK\n'

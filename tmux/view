@@ -1,0 +1,250 @@
+#!/bin/zsh
+# Вид: окна из разных сессий на одном экране. Выбранные окна переезжают
+# панелями в сессию `view` (раскладка tiled, над каждой панелью — откуда
+# она), по ним ходят штатные prefix h/j/k/l, prefix z разворачивает одну;
+# `view back` возвращает каждое окно в свою сессию на прежний индекс с
+# именем, раскладкой и метками (@attention, @cmd) и закрывает вид.
+#
+#   view toggle            prefix S: собрать вид (окно выбора) или, если вид
+#                          открыт, вернуть всё на места
+#   view select            окно выбора (fzf в попапе): Tab отмечает окна,
+#                          Enter собирает вид; одно окно — просто переход
+#   view make ЦЕЛЬ…        собрать вид из окон (сессия:окно, @id)
+#   view pick ЦЕЛЬ         из дерева prefix s: t на окнах, затем
+#                          «:run "~/.config/dotfiles/tmux/view pick %%"» —
+#                          tmux зовёт это для каждого помеченного окна,
+#                          вид собирается, когда отметки перестали приходить
+#   view back              вернуть окна, закрыть вид
+#   view status            «view» для статус-бара, пока вид открыт
+#
+# Окно, последнее в своей сессии, оставляет после себя окно-заглушку «·»,
+# чтобы сессия не закрылась; при возврате заглушка убирается. Запись о
+# том, что откуда взято, — ~/.local/state/dev/view (TSV); снимок сессий
+# (dev -s) сессию view не записывает.
+
+emulate -L zsh
+path=(/opt/homebrew/bin /usr/local/bin $path)
+typeset -U path
+
+self=${0:A}
+state_dir=${XDG_STATE_HOME:-$HOME/.local/state}/dev
+state=$state_dir/view
+pending=$state_dir/view.pending
+session=view
+tab=$'\t'
+
+die() { print -u2 -r -- "view: $*"; exit 1 }
+
+has_view() { tmux has-session -t "=$session" 2>/dev/null }
+
+# ============================================================
+# Список окон и выбор
+# ============================================================
+
+# Строки: "цель<TAB>показ": сессия:индекс, имя, метка агента; ждущие первыми.
+list() {
+  tmux list-windows -a -F $'#{session_name}\t#{window_index}\t#{window_name}\t#{@attention}\t#{window_id}' 2>/dev/null |
+    awk -F'\t' -v s="$session" '$1 != s {
+      mark = ($4 == "wait") ? "?" : ($4 == "done") ? "✓" : " ";
+      order = ($4 == "wait") ? 0 : ($4 == "done") ? 1 : 2;
+      printf "%d\t%s\t%s %-18s %-3s %s\n", order, $5, mark, $1 ":" $2, "", $3
+    }' | sort -s -k1,1n | cut -f2-
+}
+
+preview() {
+  local target=$1
+  tmux display-message -p -t "$target" '#{session_name}:#{window_index} #{window_name} — #{pane_current_command} в #{pane_current_path}'
+  print
+  tmux capture-pane -p -e -t "$target" 2>/dev/null | tail -n 40
+}
+
+select_windows() {
+  # Нормальный режим, как в окнах поиска nvim: j / k ходят, i — набор.
+  source ${self:h}/fzf-normal.zsh
+  local -a chosen
+  chosen=(${(f)"$(list | fzf --delimiter $tab --with-nth 2 --height=100% --reverse --tiebreak index --multi \
+    --marker '▌' --prompt "$(fzf_normal_prompt вид)" "${(@)fzf_normal_binds}" \
+    --header 'j / k — ходить, Tab — отметить окна, Enter — собрать вид (одно окно — перейти), i — набрать, q — закрыть' \
+    --preview "$self --preview {1}" --preview-window right,55% | cut -f1)"})
+  (( $#chosen )) || exit 0
+  if (( $#chosen == 1 )); then
+    tmux switch-client -t "$chosen[1]"
+    exit 0
+  fi
+  "$self" make $chosen
+}
+
+# ============================================================
+# Сборка
+# ============================================================
+
+make_view() {
+  (( $# )) || die "нечего собирать"
+  has_view && die "вид уже открыт: prefix S вернёт всё на места"
+  mkdir -p $state_dir || die "нет $state_dir"
+  local -a windows
+  local target id
+  for target in "$@"; do
+    id=$(tmux display-message -p -t "$target" '#{window_id}' 2>/dev/null) || die "нет окна $target"
+    (( ${windows[(Ie)$id]} )) || windows+=$id
+  done
+  local origin=$(tmux display-message -p '#{client_session}' 2>/dev/null)
+
+  # Сессия вида с одной временной панелью, размером с клиент (без клиента —
+  # как есть); окна переезжают в неё. Создаётся до всего остального: если
+  # не создать, ничего не тронуто.
+  local -a size
+  local width=$(tmux display-message -p '#{client_width}' 2>/dev/null) height=$(tmux display-message -p '#{client_height}' 2>/dev/null)
+  [[ $width == <-> && $height == <-> ]] && size=(-x $width -y $height)
+  local win=$(tmux new-session -d -P -F '#{window_id}' -s $session -n view $size) || die "не создать сессию $session"
+  local placeholder=$(tmux display-message -p -t "$win" '#{pane_id}')
+
+  local -a records panes f
+  local line sess index name layout attention cmd active pane
+  records=("C$tab$origin")
+  for id in $windows; do
+    line=$(tmux display-message -p -t "$id" $'#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{@attention}\t#{@cmd}\t#{window_active}')
+    # Поля делятся явно: read с IFS склеивает соседние табуляции пустых полей.
+    f=("${(@ps:\t:)line}")
+    sess=$f[1] index=$f[2] name=$f[3] layout=$f[4] attention=$f[5] cmd=$f[6] active=$f[7]
+    records+="W$tab$id$tab$sess$tab$index$tab$name$tab$layout$tab$attention$tab$cmd$tab$active"
+    # Последнее окно сессии: заглушка, чтобы сессия пережила переезд.
+    if [[ $(tmux list-windows -t "=$sess" -F x | wc -l | tr -d ' ') == 1 ]]; then
+      local stub=$(tmux new-window -d -P -F '#{window_id}' -t "=$sess:" -n '·')
+      records+="S$tab$sess$tab$stub"
+    fi
+    for pane in ${(f)"$(tmux list-panes -t "$id" -F '#{pane_id}')"}; do
+      records+="P$tab$id$tab$pane"
+      tmux set-option -p -t "$pane" @view_origin "$sess:$name"
+      panes+=$pane
+    done
+  done
+
+  for pane in $panes; do
+    tmux join-pane -d -s "$pane" -t "$win" || die "не перенести $pane"
+  done
+  tmux kill-pane -t "$placeholder"
+  tmux select-layout -t "$win" tiled
+  tmux set-option -w -t "$win" pane-border-status top
+  tmux set-option -w -t "$win" pane-border-format ' #[fg=#89b4fa]#{@view_origin}#[default] '
+  tmux select-pane -t "$panes[1]"
+  print -rl -- $records > $state
+  switch_to "=$session"
+  tmux refresh-client -S 2>/dev/null || true
+}
+
+# Клиент — в сессию: текущий клиент, а из фона (run-shell после паузы,
+# где текущего клиента нет) — первый подключённый.
+switch_to() {
+  tmux switch-client -t "$1" 2>/dev/null && return
+  local client=$(tmux list-clients -F '#{client_name}' 2>/dev/null | head -n 1)
+  [[ -n $client ]] && tmux switch-client -c "$client" -t "$1" 2>/dev/null
+}
+
+# ============================================================
+# Возврат
+# ============================================================
+
+back() {
+  [[ -r $state ]] || die "вид не открыт"
+  local origin=$(awk -F'\t' '$1 == "C" { print $2; exit }' $state)
+  local line key sess index name layout attention cmd active new first pane
+  local -a panes alive f
+  # Окна возвращаются по возрастанию прежнего индекса: с renumber-windows
+  # соседи сдвинулись вниз, когда окно уехало, и каждое встаёт перед тем,
+  # кто теперь на его месте, — порядок сессии восстанавливается точно.
+  while IFS= read -r line; do
+    # Поля делятся явно: read с IFS склеивает соседние табуляции пустых полей.
+    f=("${(@ps:\t:)line}")
+    key=$f[2] sess=$f[3] index=$f[4] name=$f[5] layout=$f[6] attention=$f[7] cmd=$f[8] active=$f[9]
+    panes=(${(f)"$(awk -F'\t' -v k="$key" '$1 == "P" && $2 == k { print $3 }' $state)"})
+    alive=()
+    for pane in $panes; do
+      tmux display-message -p -t "$pane" '' >/dev/null 2>&1 && alive+=$pane
+    done
+    (( $#alive )) || continue
+    tmux has-session -t "=$sess" 2>/dev/null || { tmux new-session -d -s "$sess"; }
+    first=$alive[1]
+    new=$(tmux break-pane -d -P -F '#{window_id}' -s "$first" -t "=$sess:" -n "$name") || continue
+    for pane in $alive[2,-1]; do
+      tmux join-pane -d -s "$pane" -t "$new"
+    done
+    (( $#alive > 1 )) && tmux select-layout -t "$new" "$layout" 2>/dev/null
+    # На прежнее место: свободный индекс — туда; занятый (соседи сдвинулись
+    # при renumber-windows) — перед тем, кто его занял.
+    if tmux list-windows -t "=$sess" -F '#{window_index}' | grep -qx "$index"; then
+      [[ $(tmux display-message -p -t "=$sess:$index" '#{window_id}') == $new ]] ||
+        tmux move-window -b -s "$new" -t "=$sess:$index" 2>/dev/null
+    else
+      tmux move-window -s "$new" -t "=$sess:$index" 2>/dev/null
+    fi
+    [[ -n $attention ]] && tmux set-option -w -t "$new" @attention "$attention"
+    [[ -n $cmd ]] && tmux set-option -w -t "$new" @cmd "$cmd"
+    (( active )) && tmux select-window -t "$new"
+    for pane in $alive; do
+      tmux set-option -pu -t "$pane" @view_origin 2>/dev/null
+    done
+  done < <(awk -F'\t' '$1 == "W"' $state | sort -t$'\t' -k3,3 -k4,4n)
+  # Заглушки — долой, вид — закрыть, клиент — туда, откуда пришёл.
+  while IFS=$tab read -r _ sess stub; do
+    tmux kill-window -t "$stub" 2>/dev/null
+  done < <(awk -F'\t' '$1 == "S"' $state)
+  rm -f $state $pending
+  if [[ -n $origin ]] && tmux has-session -t "=$origin" 2>/dev/null; then
+    switch_to "=$origin"
+  fi
+  tmux kill-session -t "=$session" 2>/dev/null
+  tmux refresh-client -S 2>/dev/null || true
+}
+
+# ============================================================
+# Из дерева: отметки приходят по одной
+# ============================================================
+
+pick() {
+  local target=$1
+  [[ -n $target ]] || exit 0
+  mkdir -p $state_dir
+  tmux display-message -p -t "$target" '#{window_id}' >> $pending 2>/dev/null || exit 0
+  # flush запускает сервер tmux в своём окружении: каталог состояния — явно.
+  local env=""
+  [[ -n ${XDG_STATE_HOME-} ]] && env="XDG_STATE_HOME=${(q)XDG_STATE_HOME} "
+  tmux run-shell -b "sleep 0.4; ${env}${(q)self} flush"
+}
+
+flush() {
+  [[ -s $pending ]] || exit 0
+  # Каждая отметка ставит свой flush; список забирает первый — переносом
+  # под своё имя, остальным не достаётся ничего.
+  local mine=$pending.$$
+  mv -f $pending $mine 2>/dev/null || exit 0
+  local -a ids
+  ids=(${(u)${(f)"$(<$mine)"}})
+  rm -f $mine
+  (( $#ids )) || exit 0
+  if (( $#ids == 1 )); then
+    tmux switch-client -t "$ids[1]"
+  else
+    make_view $ids
+  fi
+}
+
+# ============================================================
+
+case ${1-} in
+  --preview) preview $2 ;;
+  select)    select_windows ;;
+  make)      shift; make_view "$@" ;;
+  pick)      pick ${2-} ;;
+  flush)     flush ;;
+  back)      back ;;
+  status)    has_view && print -r -- '#[fg=#1e1e2e,bg=#89b4fa,bold] view #[default] ' ;;
+  toggle)
+    if has_view; then
+      back
+    else
+      tmux display-popup -E -w 100% -h 100% -T " вид: окна из разных сессий " "${(q)self} select"
+    fi
+    ;;
+  *) die "toggle|select|make ЦЕЛЬ…|pick ЦЕЛЬ|back|status" ;;
+esac
