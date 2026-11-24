@@ -505,6 +505,18 @@ same "the order of the session is back" "$(tmux -L "$socket" list-windows -t six
 TMUX="$asock,0,0" "$view" make six:git
 TMUX="$asock,0,0" "$view" back
 same "the last window comes back last" "$(tmux -L "$socket" list-windows -t six -F '#{window_index}=#{window_name}' | tr '\n' ' ')" "1=editor 2=server 3=tests 4=infra 5=shell 6=git "
+# A target that is no window: refused before anything moves (tmux itself
+# answers an empty id, or another window of the session, for a bad target).
+if TMUX="$asock,0,0" "$view" make six:tests nosuch:1 2>/dev/null; then echo "a missing window must be refused" >&2; exit 1; fi
+if TMUX="$asock,0,0" "$view" make six:tests six:9 2>/dev/null; then echo "a missing index must be refused" >&2; exit 1; fi
+same "nothing moved, no view" "$(tmux -L "$socket" list-windows -a -F '#{session_name}' | sort -u | tr '\n' ' ')" "billing mono shop six "
+has "the error is logged" "$(cat "$work/state/dev/view.log")" "нет окна nosuch:1"
+# The record lost while a view is open: back brings the panes home by their labels.
+TMUX="$asock,0,0" "$view" make six:tests billing:tests
+rm -f "$work/state/dev/view"
+TMUX="$asock,0,0" "$view" back
+same "recovered by the labels: the windows are back, the stub and the view gone" "$(tmux -L "$socket" list-windows -a -F '#{session_name}:#{window_name}' | sort | tr '\n' ' ')" "billing:tests mono:editor shop:editor shop:server shop:tests six:editor six:git six:infra six:server six:shell six:tests "
+has "the tree counts windows in English" "$(tmux -L "$socket" list-keys -T prefix s)" 'session_windows} windows'
 unset XDG_STATE_HOME
 tmux -L "$socket" kill-server
 echo "VIEW_OK"

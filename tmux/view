@@ -20,7 +20,10 @@
 # Окно, последнее в своей сессии, оставляет после себя окно-заглушку «·»,
 # чтобы сессия не закрылась; при возврате заглушка убирается. Запись о
 # том, что откуда взято, — ~/.local/state/dev/view (TSV); снимок сессий
-# (dev -s) сессию view не записывает.
+# (dev -s) сессию view не записывает. Сборка, оборвавшаяся на полпути,
+# откатывается сама; сбои пишутся в ~/.local/state/dev/view.log и в
+# строку состояния. Если сессия вида есть, а записи нет, `back`
+# возвращает панели по их подписям @view_origin (в конец сессий).
 
 emulate -L zsh
 path=(/opt/homebrew/bin /usr/local/bin $path)
@@ -33,9 +36,33 @@ pending=$state_dir/view.pending
 session=view
 tab=$'\t'
 
-die() { print -u2 -r -- "view: $*"; exit 1 }
+# Ошибка: в stderr, в журнал ~/.local/state/dev/view.log (попап закрывается
+# вместе с текстом) и в строку состояния tmux на несколько секунд.
+die() {
+  print -u2 -r -- "view: $*"
+  mkdir -p $state_dir 2>/dev/null && print -r -- "$(date '+%F %T') $*" >> $state_dir/view.log
+  tmux display-message -d 5000 "view: $*" 2>/dev/null
+  exit 1
+}
 
 has_view() { tmux has-session -t "=$session" 2>/dev/null }
+
+# Окно по цели: @id, «сессия:индекс» или «сессия:имя», строго по списку
+# окон. display-message -t с несуществующей целью отдаёт пустоту со
+# статусом 0, а «shop:9» без такого окна — текущее окно сессии; ни то, ни
+# другое для переезда не годится.
+resolve_window() {
+  local target=$1 line
+  local -a f
+  for line in ${(f)"$(tmux list-windows -a -F $'#{window_id}\t#{session_name}:#{window_index}\t#{session_name}:#{window_name}' 2>/dev/null)"}; do
+    f=("${(@ps:\t:)line}")
+    if [[ $target == $f[1] || $target == $f[2] || $target == $f[3] ]]; then
+      print -r -- $f[1]
+      return 0
+    fi
+  done
+  return 1
+}
 
 # ============================================================
 # Список окон и выбор
@@ -71,7 +98,10 @@ select_windows() {
     tmux switch-client -t "$chosen[1]"
     exit 0
   fi
-  "$self" make $chosen
+  # Ошибка сборки видна в строке состояния и в журнале (die), попап
+  # закрывается чистым статусом — иначе run-shell печатал бы «returned 1»
+  # поверх панели.
+  "$self" make $chosen || exit 0
 }
 
 # ============================================================
@@ -85,7 +115,7 @@ make_view() {
   local -a windows
   local target id
   for target in "$@"; do
-    id=$(tmux display-message -p -t "$target" '#{window_id}' 2>/dev/null) || die "нет окна $target"
+    id=$(resolve_window "$target") || die "нет окна $target"
     (( ${windows[(Ie)$id]} )) || windows+=$id
   done
   local origin=$(tmux display-message -p '#{client_session}' 2>/dev/null)
@@ -96,21 +126,39 @@ make_view() {
   local -a size
   local width=$(tmux display-message -p '#{client_width}' 2>/dev/null) height=$(tmux display-message -p '#{client_height}' 2>/dev/null)
   [[ $width == <-> && $height == <-> ]] && size=(-x $width -y $height)
-  local win=$(tmux new-session -d -P -F '#{window_id}' -s $session -n view $size) || die "не создать сессию $session"
-  local placeholder=$(tmux display-message -p -t "$win" '#{pane_id}')
+  # Не `local win=$(…) || die`: статус у local свой, нулевой, и ошибка
+  # new-session прошла бы незамеченной с пустым $win.
+  local win placeholder error
+  win=$(tmux new-session -d -P -F '#{window_id}' -s $session -n view $size 2>&1) || die "не создать сессию $session: $win"
+  placeholder=$(tmux display-message -p -t "$win" '#{pane_id}')
+
+  # Сборка не удалась на полпути — всё назад: панели по своим подписям,
+  # заглушки долой, сессия вида прочь; потом die.
+  local -a stubs
+  fail() {
+    local p origin_of
+    for p in ${(f)"$(tmux list-panes -t "=$session" -F $'#{pane_id}\t#{@view_origin}' 2>/dev/null)"}; do
+      origin_of=${p#*$tab}
+      [[ -n $origin_of ]] && tmux break-pane -d -s "${p%%$tab*}" -t "=${origin_of%%:*}:" -n "${origin_of#*:}" 2>/dev/null
+    done
+    for p in $stubs; do tmux kill-window -t "$p" 2>/dev/null; done
+    tmux kill-session -t "=$session" 2>/dev/null
+    die "$@"
+  }
 
   local -a records panes f
-  local line sess index name layout attention cmd active pane
+  local line sess index name layout attention cmd active pane stub
   records=("C$tab$origin")
   for id in $windows; do
-    line=$(tmux display-message -p -t "$id" $'#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{@attention}\t#{@cmd}\t#{window_active}')
+    line=$(tmux display-message -p -t "$id" $'#{session_name}\t#{window_index}\t#{window_name}\t#{window_layout}\t#{@attention}\t#{@cmd}\t#{window_active}') || fail "окно $id пропало"
     # Поля делятся явно: read с IFS склеивает соседние табуляции пустых полей.
     f=("${(@ps:\t:)line}")
     sess=$f[1] index=$f[2] name=$f[3] layout=$f[4] attention=$f[5] cmd=$f[6] active=$f[7]
     records+="W$tab$id$tab$sess$tab$index$tab$name$tab$layout$tab$attention$tab$cmd$tab$active"
     # Последнее окно сессии: заглушка, чтобы сессия пережила переезд.
     if [[ $(tmux list-windows -t "=$sess" -F x | wc -l | tr -d ' ') == 1 ]]; then
-      local stub=$(tmux new-window -d -P -F '#{window_id}' -t "=$sess:" -n '·')
+      stub=$(tmux new-window -d -P -F '#{window_id}' -t "=$sess:" -n '·') || fail "не создать заглушку в $sess"
+      stubs+=$stub
       records+="S$tab$sess$tab$stub"
     fi
     for pane in ${(f)"$(tmux list-panes -t "$id" -F '#{pane_id}')"}; do
@@ -121,7 +169,7 @@ make_view() {
   done
 
   for pane in $panes; do
-    tmux join-pane -d -s "$pane" -t "$win" || die "не перенести $pane"
+    error=$(tmux join-pane -d -s "$pane" -t "$win" 2>&1) || fail "не перенести $pane: $error"
   done
   tmux kill-pane -t "$placeholder"
   tmux select-layout -t "$win" tiled
@@ -146,7 +194,11 @@ switch_to() {
 # ============================================================
 
 back() {
-  [[ -r $state ]] || die "вид не открыт"
+  if [[ ! -r $state ]]; then
+    has_view || die "вид не открыт"
+    recover
+    return
+  fi
   local origin=$(awk -F'\t' '$1 == "C" { print $2; exit }' $state)
   local line key sess index name layout attention cmd active new first pane
   local -a panes alive f
@@ -197,6 +249,28 @@ back() {
   tmux refresh-client -S 2>/dev/null || true
 }
 
+# Сессия вида есть, записи нет (сборка оборвалась, файл потерян): панели
+# возвращаются по своим подписям @view_origin — в сессию, окном с тем же
+# именем, в конец; прежний индекс и раскладка неизвестны. Панель без
+# подписи остаётся в виде и вид не закрывается.
+recover() {
+  local p pane origin_of left=0
+  for p in ${(f)"$(tmux list-panes -t "=$session" -F $'#{pane_id}\t#{@view_origin}' 2>/dev/null)"}; do
+    pane=${p%%$tab*} origin_of=${p#*$tab}
+    if [[ -z $origin_of ]]; then left=1; continue; fi
+    tmux has-session -t "=${origin_of%%:*}" 2>/dev/null || tmux new-session -d -s "${origin_of%%:*}"
+    tmux break-pane -d -s "$pane" -t "=${origin_of%%:*}:" -n "${origin_of#*:}" 2>/dev/null && tmux set-option -pu -t "$pane" @view_origin 2>/dev/null
+  done
+  for p in ${(f)"$(tmux list-windows -a -F $'#{window_id}\t#{window_name}' 2>/dev/null)"}; do
+    [[ ${p#*$tab} == '·' ]] && tmux kill-window -t "${p%%$tab*}" 2>/dev/null
+  done
+  (( left )) && die "в виде осталась панель без подписи — вид не закрыт"
+  local client_session=$(tmux display-message -p '#{client_session}' 2>/dev/null)
+  [[ $client_session == $session ]] && switch_to "$(tmux list-sessions -F '#{session_name}' | grep -vx "$session" | head -n 1)"
+  tmux kill-session -t "=$session" 2>/dev/null
+  tmux display-message -d 4000 "view: записи не было — окна возвращены по подписям, в конец сессий" 2>/dev/null
+}
+
 # ============================================================
 # Из дерева: отметки приходят по одной
 # ============================================================
@@ -205,7 +279,7 @@ pick() {
   local target=$1
   [[ -n $target ]] || exit 0
   mkdir -p $state_dir
-  tmux display-message -p -t "$target" '#{window_id}' >> $pending 2>/dev/null || exit 0
+  resolve_window "$target" >> $pending || exit 0
   # flush запускает сервер tmux в своём окружении: каталог состояния — явно.
   local env=""
   [[ -n ${XDG_STATE_HOME-} ]] && env="XDG_STATE_HOME=${(q)XDG_STATE_HOME} "
