@@ -46,6 +46,16 @@ nvim_env=(
   # Fixtures use isolated GOPATH/GOMODCACHE/GOPROXY; an in-process gopls keeps
   # them out of the user's shared daemon.
   "NVIM_GOPLS_REMOTE=0"
+  # The Go environment of the machine stays out of the fixtures: a go.work of
+  # a corporate monorepo (GOWORK), -mod=vendor (GOFLAGS) or settings written
+  # with `go env -w` (the GOENV file) make `go list ./...` of a fixture module
+  # answer "directory prefix . does not contain main module" / "go.mod file
+  # not found", and gopls never loads it. The editor itself inherits them as
+  # they are (go/go-tools, README «Корпоративный Go»); only the tests are
+  # kept clean.
+  "GOWORK=off"
+  "GOFLAGS="
+  "GOENV=off"
   # Fixture repositories ignore the user's global git config.
   "GIT_CONFIG_GLOBAL=/dev/null"
   "NVIM_CHANGE_TREE_HELPER=$helper"
