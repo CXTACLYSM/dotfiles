@@ -205,6 +205,18 @@ require("catppuccin").setup({
         which_key = true,
         nvim_web_devicons = true,
     },
+    -- Markdown reads as text (lua/markdown_view.lua): code inside a line is
+    -- near-white on the dark ground of code blocks instead of the green of
+    -- strings in a grey box, and bold is bold instead of red — alike in the
+    -- buffer (render-markdown) and on the page of Space m (md-render).
+    custom_highlights = function(colors)
+        return {
+            ["@markup.raw.markdown_inline"] = { fg = colors.rosewater },
+            RenderMarkdownCodeInline = { bg = colors.mantle },
+            MdRenderInlineCode = { fg = colors.rosewater, bg = colors.mantle },
+            ["@markup.strong.markdown_inline"] = { fg = colors.text, style = { "bold" } },
+        }
+    end,
 })
 
 vim.cmd.colorscheme("catppuccin-mocha")

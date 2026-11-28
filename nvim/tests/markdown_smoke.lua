@@ -43,6 +43,29 @@ local diagrams = require("markdown_diagrams")
 assert(view.diagrams and diagrams.config.reader == false, "node is here, the diagrams are on, the cursor shows a source")
 print("MARKDOWN_CONFIG_OK")
 
+-- Column widths of a page table (md-render shares the width in proportion
+-- to the widest cells): a short column beside a long one keeps its longest
+-- word; a table where no column falls short, or that fits, is untouched.
+local function cell(text)
+    return { text = text }
+end
+local starved = {
+    col_widths = { 6, 150 },
+    headers = { cell("Окно"), cell("Что в нём") },
+    rows = { { cell("editor"), cell(string.rep("набрано devlog make run ", 6)) } },
+}
+local fitted = view.fit_columns(starved, "", 70)
+-- 70 columns: the indent, "│ " and " " per column and the last "│" leave 63.
+assert(fitted ~= starved and fitted.col_widths[1] == 6 and fitted.col_widths[1] + fitted.col_widths[2] == 63,
+    "the short column keeps its longest word (6 of 63): " .. vim.inspect(fitted.col_widths))
+assert(fitted.rows == starved.rows and starved.col_widths[1] == 6, "the parsed table itself is not changed")
+local wide_key = vim.tbl_extend("force", {}, starved, { col_widths = { 30, 150 } })
+wide_key.rows = { { cell("a long key in the first column"), cell(string.rep("prose ", 25)) } }
+assert(view.fit_columns(wide_key, "", 70) == wide_key, "no column falls short: md-render's own widths")
+local fits = vim.tbl_extend("force", {}, starved, { col_widths = { 6, 40 } })
+assert(view.fit_columns(fits, "", 70) == fits, "a table that fits is untouched")
+print("MARKDOWN_TABLE_WIDTHS_OK")
+
 local ns = assert(vim.api.nvim_get_namespaces()["render-markdown.nvim"], "render-markdown namespace")
 
 local function marks(buf)
@@ -81,6 +104,11 @@ vim.fn.writefile({
     "```",
     "",
     "after",
+    "",
+    "| Window | What is there |",
+    "|---|---|",
+    "| `editor` | `nvim .` is running |",
+    "| `server` | `devlog make run` typed, waiting for Enter; one pane per target when there are several of them, three at most, and nothing when the project has no Makefile |",
 }, file)
 
 vim.cmd.edit(file)
@@ -112,6 +140,8 @@ assert(page_text:find("Title", 1, true) and not page_text:find("# Title", 1, tru
 assert(page_text:find("│", 1, true) and page_text:find("│ a ", 1, true), "the table boxed: " .. page_text)
 assert(not page_text:find("…", 1, true) and page_text:find("several rows", 1, true),
     "a wide cell wraps instead of being cut: " .. page_text)
+assert(page_text:find("│ editor ", 1, true) and page_text:find("│ server ", 1, true),
+    "a short column beside a long one keeps its words whole (not edi / tor): " .. page_text)
 assert(vim.wo.number == false and vim.wo.relativenumber == false, "no line numbers on the page")
 assert(vim.wo.winbar == "", "the page has no breadcrumbs bar")
 assert(vim.api.nvim_buf_is_loaded(buf) and vim.bo[buf].modified == false, "the source is untouched")
@@ -235,6 +265,27 @@ for _, group in ipairs({ "RenderMarkdownH1Bg", "RenderMarkdownH2Bg", "RenderMark
     local hl = vim.api.nvim_get_hl(0, { name = group })
     assert(hl.link == nil and hl.bg ~= nil, group .. " comes from the theme, not a default link")
 end
+-- Code inside a line and bold read as text (init.lua, custom_highlights of
+-- the theme): the code not in the green of strings and on the dark ground
+-- of code blocks, alike in the buffer and on the page (md-render, which has
+-- drawn the page above and set its own defaults by now); bold not red.
+local function hl(name)
+    return vim.api.nvim_get_hl(0, { name = name, link = false })
+end
+local function hex(value)
+    return value and string.format("#%06x", value) or "none"
+end
+local code, ground = hl("@markup.raw.markdown_inline"), hl("RenderMarkdownCode").bg
+assert(code.fg and code.fg ~= hl("String").fg, "inline code not in the green of strings: " .. hex(code.fg))
+assert(hl("RenderMarkdownCodeInline").bg == ground,
+    string.format("inline code on the ground of code blocks %s, got %s", hex(ground), hex(hl("RenderMarkdownCodeInline").bg)))
+local page_code = hl("MdRenderInlineCode")
+assert(page_code.fg == code.fg and page_code.bg == ground,
+    string.format("the page draws inline code as the buffer does (%s on %s), got %s on %s",
+        hex(code.fg), hex(ground), hex(page_code.fg), hex(page_code.bg)))
+local strong = hl("@markup.strong.markdown_inline")
+assert(strong.bold and strong.fg == hl("Normal").fg,
+    string.format("bold in the colour of the text %s, got %s bold=%s", hex(hl("Normal").fg), hex(strong.fg), tostring(strong.bold)))
 print("MARKDOWN_THEME_OK")
 
 vim.fn.delete(file)

@@ -61,6 +61,29 @@ left="$(tmux -L "$socket" display-message -p -t 'proj@TASK-1' '#{E:status-left}'
 [[ "$left" == *" proj #[default]#[fg=#b4befe,bg=#313244] @TASK-1 #[default]"* ]] || { echo "status-left of a task session: $left" >&2; exit 1; }
 left="$(tmux -L "$socket" display-message -p -t probe '#{E:status-left}')"
 [[ "$left" == *" probe #[default] "* && "$left" != *"@"* ]] || { echo "status-left of a plain session: $left" >&2; exit 1; }
+# Muted at rest (blue name on the dark plate of the current window), bright
+# only while tmux waits for something: prefix (yellow), copy mode (mauve).
+# Without a client prefix is never on: session_windows (true) stands in.
+[[ "$left" == "#[fg=#89b4fa,bg=#313244,bold] probe "* ]] || { echo "the session plate at rest is not muted: $left" >&2; exit 1; }
+left="$(tmux -L "$socket" display-message -p -t probe '#{E:#{s/client_prefix/session_windows/:status-left}}')"
+[[ "$left" == "#[fg=#1e1e2e,bg=#f9e2af,bold] probe "* ]] || { echo "the session plate after prefix is not yellow: $left" >&2; exit 1; }
+# Pane borders in the colour of the window separators of nvim (WinSeparator
+# of catppuccin mocha: crust), the active one a step lighter.
+same "pane border" "$(tmux -L "$socket" show -gv pane-border-style)" "fg=#11111b"
+same "active pane border" "$(tmux -L "$socket" show -gv pane-active-border-style)" "fg=#45475a"
+# Every colour of tmux and lazygit is one of the palette of the nvim theme
+# (and the cursor line of nvim, a blend of it).
+palette="${XDG_DATA_HOME:-$HOME/.local/share}/nvim/site/pack/core/opt/catppuccin/lua/catppuccin/palettes/mocha.lua"
+if [[ -f "$palette" ]]; then
+  allowed=" $(grep -o '#[0-9a-fA-F]\{6\}' "$palette" | tr 'A-F' 'a-f' | tr '\n' ' ') #2a2b3c "
+  for file in "$here"/tmux.conf "$here"/attention "$here"/view "$here"/git-status.sh "$here"/deadline.sh "$here"/deadline-view.sh "$here/../git/lazygit.yml"; do
+    for colour in $(grep -o '#[0-9a-fA-F]\{6\}' "$file" | tr 'A-F' 'a-f' | sort -u); do
+      [[ "$allowed" == *" $colour "* ]] || { echo "$(basename "$file"): $colour is not in the catppuccin mocha palette of nvim" >&2; exit 1; }
+    done
+  done
+else
+  echo "  catppuccin is not installed for nvim: the palette check is skipped"
+fi
 tmux -L "$socket" kill-session -t 'proj@TASK-1'
 [[ "$(tmux -L "$socket" show -gv window-status-current-style)" == default ]] || { echo "the current window is underlined" >&2; exit 1; }
 [[ "$(tmux -L "$socket" show -gv window-status-format)" == *'#[fg=#6c7086]#I #[fg=#a6adc8]#W'* ]] || { echo "window index is not dimmed" >&2; exit 1; }
@@ -305,15 +328,24 @@ state_of() { awk -F'\t' -v s="$1" '$1 == "session" && $2 == s { print $9 }' "$sn
 tmux -f /dev/null new-session -d -s seed -c "$work" -x 120 -y 30
 same "dev -d" "$(cd "$work/proj" && "$dev" -d)" "proj"
 same "layout windows" "$(tmux list-windows -t '=proj' -F '#W' | tr '\n' ' ')" "editor server tests "
-# No layout file: the windows by default, git (lazygit) the last one.
+# No layout file: the windows by default, shell the last one (no git window).
 mkdir -p "$work/auto"
 printf 'module example.com/auto\n\ngo 1.23\n' > "$work/auto/go.mod"
 same "dev -d without a layout" "$(cd "$work/auto" && "$dev" -d)" "auto"
-same "default windows, git last" "$(tmux list-windows -t '=auto' -F '#W' | tr '\n' ' ')" "editor server tests infra shell git "
-same "the git window in the root" "$(tmux list-panes -t '=auto:git' -F '#{pane_current_path}')" "$work_real/auto"
-for _ in 1 2 3 4 5 6 7 8 9 10; do [[ "$(tmux list-panes -t '=auto:git' -F '#{pane_current_command}')" == lazygit ]] && break; sleep 0.3; done
-same "lazygit running there" "$(tmux list-panes -t '=auto:git' -F '#{pane_current_command}')" "lazygit"
+same "default windows, no git window" "$(tmux list-windows -t '=auto' -F '#W' | tr '\n' ' ')" "editor server tests infra shell "
 tmux kill-session -t '=auto'
+# A folder of several projects: one session of the folder itself, the same
+# windows, none per project; per-project windows only when named.
+mkdir -p "$work/many/api" "$work/many/web"
+printf 'module example.com/api\n\ngo 1.23\n' > "$work/many/api/go.mod"
+printf '{}\n' > "$work/many/web/package.json"
+same "dev -d in a folder of projects" "$(cd "$work/many" && "$dev" -d)" "many"
+same "windows of the folder, none per project" "$(tmux list-windows -t '=many' -F '#W' | tr '\n' ' ')" "editor server tests infra shell "
+same "the folder is the root" "$(tmux show -t '=many:' -qv @dev_root)" "$work/many"
+tmux kill-session -t '=many'
+same "dev -d with projects named" "$(cd "$work/many" && "$dev" -d api web)" "many"
+same "windows per named project" "$(tmux list-windows -t '=many' -F '#W' | tr '\n' ' ')" "api/editor api/server api/tests web/editor web/server web/tests infra shell "
+tmux kill-session -t '=many'
 tmux new-window -d -t '=proj:' -n extra -c "$work/other"
 tmux split-window -d -t '=proj:extra' -c "$work"
 tmux select-window -t '=proj:tests'

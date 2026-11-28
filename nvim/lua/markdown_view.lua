@@ -8,7 +8,8 @@
 -- rendered into a read-only buffer of its own ("README.md [render]",
 -- filetype md-render) that takes the window in place of the source —
 -- paragraphs reflowed to the width of the window (up to M.page_width),
--- tables boxed with their cells wrapped, headings marked by level (Nerd
+-- tables boxed with their cells wrapped and no column narrower than its
+-- longest word (M.fit_columns), headings marked by level (Nerd
 -- Font glyphs: the page is for the terminal of the iTerm profile), no
 -- line numbers; `za` or Enter fold a callout. Space m again brings the
 -- source back, the cursor on the same line. The source buffer is never
@@ -112,6 +113,78 @@ M.diagrams = false
 -- Widest rendered line of a page; a narrower window wraps to its width.
 M.page_width = 100
 
+-- md-render narrows the columns of a table wider than the page in
+-- proportion to their widest cells, so a short column beside a long one
+-- comes out narrower than its longest word, and the word is cut into
+-- syllables ("edi" / "tor"). Such a table gets other widths here: every
+-- column keeps at least its longest word, the rest of the width is shared
+-- in proportion. Any other table is left to md-render as it is: one that
+-- fits, one where no column falls short, one whose longest words alone
+-- overflow the page.
+function M.fit_columns(parsed, indent, max_width)
+    local widths = parsed.col_widths
+    if not max_width or #widths == 0 then
+        return parsed
+    end
+    local sep = vim.api.nvim_strwidth("│")
+    -- The line of a row: indent, then "│ " cell " " per column, then "│".
+    local budget = max_width - vim.api.nvim_strwidth(indent) - #widths * (sep + 2) - sep
+    local words, natural, least, wants = {}, 0, 0, 0
+    for col, width in ipairs(widths) do
+        local longest = 0
+        local cells = { parsed.headers[col] }
+        for _, row in ipairs(parsed.rows) do
+            table.insert(cells, row[col])
+        end
+        for _, cell in ipairs(cells) do
+            for word in (cell.text or ""):gmatch("%S+") do
+                longest = math.max(longest, vim.api.nvim_strwidth(word))
+            end
+        end
+        words[col] = math.min(longest, width)
+        natural = natural + width
+        least = least + words[col]
+        -- A column wider than the page wants the page.
+        wants = wants + math.min(width, budget)
+    end
+    if natural <= budget or least > budget then
+        return parsed
+    end
+    -- The share md-render gives a column (markdown_table.lua); the
+    -- rounding after it only adds.
+    local short = false
+    for col, width in ipairs(widths) do
+        short = short or math.floor(math.min(width, budget) / wants * budget) < words[col]
+    end
+    if not short then
+        return parsed
+    end
+    -- Over the longest words, each column gets a share of what is left in
+    -- proportion to what it wants beyond them.
+    wants = wants - least
+    local share = wants > 0 and (budget - least) / wants or 0
+    local fitted, used = {}, 0
+    for col, width in ipairs(widths) do
+        fitted[col] = words[col] + math.floor(share * (math.min(width, budget) - words[col]))
+        used = used + fitted[col]
+    end
+    -- What the rounding left, a cell at a time, to the column that lacks most.
+    while used < budget do
+        local best, lack = nil, 0
+        for col, width in ipairs(widths) do
+            if width - fitted[col] > lack then
+                best, lack = col, width - fitted[col]
+            end
+        end
+        if not best then
+            break
+        end
+        fitted[best] = fitted[best] + 1
+        used = used + 1
+    end
+    return vim.tbl_extend("force", {}, parsed, { col_widths = fitted })
+end
+
 function M.setup()
     -- `nvim -R` is for reading: no raw cursor line there, and a diagram
     -- never gives way to its source.
@@ -130,12 +203,12 @@ function M.setup()
     -- A table is drawn with its cells wrapped, as a browser draws it.
     -- md-render's own default cuts a wide cell to "…" and waits for Enter
     -- on the table to wrap it; there is no setting for the default, so the
-    -- renderer is asked for the wrapped form every time (the version is
-    -- pinned, nvim-pack-lock.json).
+    -- renderer is asked for the wrapped form every time, with the widths of
+    -- M.fit_columns (the version is pinned, nvim-pack-lock.json).
     local tables = require("md-render.markdown_table")
     local render = tables.render
     tables.render = function(parsed, indent, max_width, _, buf_dir)
-        return render(parsed, indent, max_width, true, buf_dir)
+        return render(M.fit_columns(parsed, indent, max_width), indent, max_width, true, buf_dir)
     end
 end
 

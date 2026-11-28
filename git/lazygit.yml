@@ -3,15 +3,16 @@
 
 gui:
   # Палитра catppuccin mocha, как в nvim, tmux и delta: рамка активной
-  # панели синяя (как у активной панели tmux), остальные тихие; выбранная
-  # строка — полосой, как строка курсора в nvim.
+  # панели синяя (как рамки всплывающих окон tmux и nvim), остальные тихие;
+  # выбранная строка — полосой, в неактивной панели — цветом строки курсора
+  # nvim (#2a2b3c).
   theme:
     activeBorderColor: ["#89b4fa", bold]
     inactiveBorderColor: ["#45475a"]
     searchingActiveBorderColor: ["#f9e2af", bold]
     optionsTextColor: ["#89b4fa"]
     selectedLineBgColor: ["#313244"]
-    inactiveViewSelectedLineBgColor: ["#28293a"]
+    inactiveViewSelectedLineBgColor: ["#2a2b3c"]
     cherryPickedCommitFgColor: ["#1e1e2e"]
     cherryPickedCommitBgColor: ["#94e2d5"]
     markedBaseCommitFgColor: ["#1e1e2e"]
